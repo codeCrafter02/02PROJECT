@@ -1,7 +1,12 @@
 import os
 from flask import Flask, request
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CommandHandler, CallbackQueryHandler, ApplicationBuilder, ContextTypes
+from telegram.ext import (
+    CommandHandler,
+    CallbackQueryHandler,
+    ApplicationBuilder,
+    ContextTypes,
+)
 
 # Initialize Flask app
 app = Flask(__name__)
