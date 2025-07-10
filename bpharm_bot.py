@@ -1,145 +1,156 @@
 import os
 from flask import Flask, request
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    CommandHandler,
-    CallbackQueryHandler,
-    ApplicationBuilder,
-    ContextTypes,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# Initialize Flask app
 app = Flask(__name__)
-
-# Bot token from environment
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("No BOT_TOKEN environment variable set")
-
-# PDF folder
+TOKEN = os.getenv("BOT_TOKEN")  # Set in Render environment variables
 PAPER_FOLDER = "bpharm_bot_18"
 
-# Semester -> Subjects
+# Complete Semester-Subject Mapping
 semesters = {
     "1st Semester": [
-        "Human Anatomy and Physiology I",
-        "Pharmaceutical Analysis I",
-        "Pharmaceutics I",
-        "Pharmaceutical Inorganic Chemistry",
+        "Human Anatomy and Physiology I - Theory",
+        "Pharmaceutical Analysis I - Theory",
+        "Pharmaceutics I - Theory",
+        "Pharmaceutical Inorganic Chemistry - Theory",
+        "Communication Skills - Theory",
+        "Remedial Biology/Mathematics - Theory"
     ],
     "2nd Semester": [
-        "Human Anatomy and Physiology II",
-        "Pharmaceutical Organic Chemistry I",
-        "Biochemistry",
-        "Pathophysiology",
+        "Human Anatomy and Physiology II - Theory",
+        "Pharmaceutical Organic Chemistry I - Theory",
+        "Biochemistry - Theory",
+        "Pathophysiology - Theory",
+        "Computer Applications in Pharmacy - Theory",
+        "Environmental Sciences - Theory"
     ],
     "3rd Semester": [
-        "Pharmaceutical Organic Chemistry II",
-        "Physical Pharmaceutics I",
-        "Pharmaceutical Microbiology",
-        "Pharmaceutical Engineering",
-        "Universal Human Values",
+        "Pharmaceutical Organic Chemistry II - Theory",
+        "Physical Pharmaceutics I - Theory",
+        "Pharmaceutical Microbiology - Theory",
+        "Pharmaceutical Engineering - Theory",
+        "Pharmacognosy and Phytochemistry I - Theory"
     ],
     "4th Semester": [
-        "Pharmaceutical Organic Chemistry III",
-        "Medicinal Chemistry I",
-        "Physical Pharmaceutics II",
-        "Pharmacology I",
-        "Pharmacognosy I",
+        "Pharmaceutical Organic Chemistry III - Theory",
+        "Medicinal Chemistry I - Theory",
+        "Physical Pharmaceutics II - Theory",
+        "Pharmacology I - Theory",
+        "Pharmacognosy and Phytochemistry II - Theory",
+        "Pharmaceutical Jurisprudence - Theory"
     ],
     "5th Semester": [
-        "Medicinal Chemistry II",
-        "Industrial Pharmacy I",
-        "Pharmacology II",
-        "Pharmacognosy and Phytochemistry",
-        "Pharmaceutical Jurisprudence Theory",
+        "Medicinal Chemistry II - Theory",
+        "Industrial Pharmacy I - Theory",
+        "Pharmacology II - Theory",
+        "Pharmacognosy and Phytochemistry III - Theory",
+        "Pharmaceutical Biotechnology - Theory"
     ],
     "6th Semester": [
-        "Medicinal Chemistry III",
-        "Pharmacology III",
-        "Herbal Drug Technology Theory",
-        "Biopharmaceutics and Pharmacokinetics Theory",
-        "Pharmaceutical Biotechnology",
-        "Quality Assurance Theory",
+        "Medicinal Chemistry III - Theory",
+        "Pharmacology III - Theory",
+        "Herbal Drug Technology - Theory",
+        "Biopharmaceutics and Pharmacokinetics - Theory",
+        "Pharmaceutical Quality Assurance - Theory",
+        "Instrumental Methods of Analysis - Theory"
     ],
     "7th Semester": [
-        "Instrumental Methods of Analysis",
-        "Industrial Pharmacy II",
-        "Pharmacy Practice",
-        "Novel Drug Delivery System",
+        "Instrumental Methods of Analysis - Theory",
+        "Industrial Pharmacy II - Theory",
+        "Pharmacy Practice - Theory",
+        "Novel Drug Delivery System - Theory",
+        "Biostatistics and Research Methodology - Theory"
     ],
     "8th Semester": [
-        "Biostatistics and Research Methodology",
-        "Social and Preventive Pharmacy",
-        "Pharma Marketing Management",
-        "Cosmetic Science",
-    ],
+        "Biostatistics and Research Methodology - Theory",
+        "Social and Preventive Pharmacy - Theory",
+        "Pharma Marketing Management - Theory",
+        "Quality Control and Standardization of Herbals - Theory",
+        "Computer-Aided Drug Design - Theory",
+        "Cell and Molecular Biology - Theory"
+    ]
 }
 
-# Create application
-application = ApplicationBuilder().token(TOKEN).build()
+def create_application():
+    """Initialize Telegram Application"""
+    application = Application.builder().token(TOKEN).build()
+    
+    # Register handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
+    application.add_handler(CallbackQueryHandler(subject_selected))
+    
+    return application
 
-# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters]
-    keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
+    """Send semester selection menu"""
+    keyboard = [
+        [InlineKeyboardButton(sem, callback_data=sem)] 
+        for sem in semesters
+    ]
+    keyboard.append([
+        InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")
+    ])
     await update.message.reply_text(
-        "📚 Select Semester:", 
+        "📚 B.Pharm Study Material\nSelect Semester:", 
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# Semester selection
 async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle semester selection"""
     query = update.callback_query
     await query.answer()
     sem = query.data
     context.user_data["semester"] = sem
-    subjects = semesters.get(sem, [])
-    keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
+    subjects = semesters[sem]
+    
+    keyboard = [
+        [InlineKeyboardButton(subj, callback_data=subj)] 
+        for subj in subjects
+    ]
     await query.edit_message_text(
-        f"📘 {sem} selected.\nSelect Subject:", 
+        f"📘 {sem} Subjects:\nSelect one:", 
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# Subject selection
 async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send PDF for selected subject"""
     query = update.callback_query
     await query.answer()
+    
     subject = query.data
     semester = context.user_data.get("semester")
-    if semester is None:
-        await query.message.reply_text("❗Please select a semester first using /start.")
+    
+    if not semester:
+        await query.message.reply_text("❗Please select a semester first using /start")
         return
     
-    subject_file = subject.replace(" ", "_") + ".pdf"
+    # Generate filename: "Pharmaceutics_I_-_Theory.pdf"
+    filename = subject.replace(" ", "_").replace("-", "") + ".pdf"
     folder = semester.replace(" ", "_")
-    filepath = os.path.join(PAPER_FOLDER, folder, subject_file)
+    filepath = os.path.join(PAPER_FOLDER, folder, filename)
     
     if os.path.exists(filepath):
         await query.message.reply_document(
-            open(filepath, "rb"), 
-            caption=f"📄 {subject}"
+            open(filepath, "rb"),
+            caption=f"📄 {semester}\n{subject}"
         )
     else:
-        await query.message.reply_text("❌ File not found.")
+        await query.message.reply_text(f"❌ Material not available for:\n{subject}")
 
-# Register handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
-application.add_handler(CallbackQueryHandler(subject_selected))
-
-# Flask webhook endpoint
-@app.route(f"/{TOKEN}", methods=["POST"])
+@app.post(f"/webhook")
 async def webhook():
-    data = request.get_json(force=True)
+    """Handle Telegram updates"""
+    application = create_application()
+    data = await request.get_json()
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
-    return "ok"
+    return "", 200
 
-# Health check
-@app.route("/")
+@app.get("/")
 def home():
-    return "Bot is running!"
+    return "B.Pharm Bot is running!"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
