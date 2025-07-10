@@ -1,1 +1,1 @@
-web: python bpharm_bot.py
+web: python 02PROJECT/bpharm_bot.py
