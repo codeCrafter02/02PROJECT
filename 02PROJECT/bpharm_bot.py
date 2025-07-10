@@ -1,7 +1,7 @@
 import os
 from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
@@ -12,34 +12,34 @@ semesters = {
         "Human Anatomy and Physiology I",
         "Pharmaceutical Analysis I",
         "Pharmaceutics I",
-        "Pharmaceutical Inorganic Chemistry"
+        "Pharmaceutical Inorganic Chemistry",
     ],
     "2nd Semester": [
         "Human Anatomy and Physiology II",
         "Pharmaceutical Organic Chemistry I",
         "Biochemistry",
-        "Pathophysiology"
+        "Pathophysiology",
     ],
     "3rd Semester": [
         "Pharmaceutical Organic Chemistry II",
         "Physical Pharmaceutics I",
         "Pharmaceutical Microbiology",
         "Pharmaceutical Engineering",
-        "Universal Human Values"
+        "Universal Human Values",
     ],
     "4th Semester": [
         "Pharmaceutical Organic Chemistry III",
         "Medicinal Chemistry I",
         "Physical Pharmaceutics II",
         "Pharmacology I",
-        "Pharmacognosy I"
+        "Pharmacognosy I",
     ],
     "5th Semester": [
         "Medicinal Chemistry II",
         "Industrial Pharmacy I",
         "Pharmacology II",
         "Pharmacognosy and Phytochemistry",
-        "Pharmaceutical Jurisprudence Theory"
+        "Pharmaceutical Jurisprudence Theory",
     ],
     "6th Semester": [
         "Medicinal Chemistry III",
@@ -47,24 +47,24 @@ semesters = {
         "Herbal Drug Technology Theory",
         "Biopharmaceutics and Pharmacokinetics Theory",
         "Pharmaceutical Biotechnology",
-        "Quality Assurance Theory"
+        "Quality Assurance Theory",
     ],
     "7th Semester": [
         "Instrumental Methods of Analysis",
         "Industrial Pharmacy II",
         "Pharmacy Practice",
-        "Novel Drug Delivery System"
+        "Novel Drug Delivery System",
     ],
     "8th Semester": [
         "Biostatistics and Research Methodology",
         "Social and Preventive Pharmacy",
         "Pharma Marketing Management",
-        "Cosmetic Science"
-    ]
+        "Cosmetic Science",
+    ],
 }
 
 app = Flask(__name__)
-telegram_app = ApplicationBuilder().token(TOKEN).build()
+telegram_app = Application.builder().token(TOKEN).build()
 
 # Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -98,12 +98,13 @@ async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.message.reply_text("❌ File not found.")
 
+# Register handlers
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
 telegram_app.add_handler(CallbackQueryHandler(subject_selected))
 
 # Webhook route
-@app.route(f'/{TOKEN}', methods=["POST"])
+@app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
     telegram_app.update_queue.put_nowait(update)
