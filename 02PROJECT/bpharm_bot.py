@@ -4,11 +4,9 @@ from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# Get Bot Token from environment
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAPER_FOLDER = "bpharm_bot_18"
 
-# Semester Mapping
 semesters = {
     "1st Semester": ["Human Anatomy and Physiology I", "Pharmaceutical Analysis I", "Pharmaceutics I", "Pharmaceutical Inorganic Chemistry"],
     "2nd Semester": ["Human Anatomy and Physiology II", "Pharmaceutical Organic Chemistry I", "Biochemistry", "Pathophysiology"],
@@ -21,15 +19,16 @@ semesters = {
 }
 
 app = Flask(__name__)
+
+# Telegram Application object (to be initialized later)
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# /start
+# --- Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters]
     keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
     await update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# semester selected
 async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -39,7 +38,6 @@ async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
     await query.edit_message_text(f"📘 {sem} selected.\nSelect Subject:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# subject selected
 async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -52,7 +50,8 @@ async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     folder = semester.replace(" ", "_")
     filepath = os.path.join(PAPER_FOLDER, folder, subject_file)
     if os.path.exists(filepath):
-        await query.message.reply_document(open(filepath, "rb"), caption=f"📄 {subject}")
+        with open(filepath, "rb") as f:
+            await query.message.reply_document(document=f, caption=f"📄 {subject}")
     else:
         await query.message.reply_text("❌ File not found.")
 
@@ -61,17 +60,20 @@ telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
 telegram_app.add_handler(CallbackQueryHandler(subject_selected))
 
-# Webhook route
+# --- Webhook route ---
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
+async def webhook():
+    if not telegram_app.running:
+        await telegram_app.initialize()
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    asyncio.run(telegram_app.process_update(update))
+    await telegram_app.process_update(update)
     return "ok"
 
-# Health check
-@app.route("/")
+# --- Health check route ---
+@app.route("/", methods=["GET"])
 def home():
     return "Bot is running!"
 
+# --- Main Flask Run ---
 if __name__ == "__main__":
     app.run(port=5000)
