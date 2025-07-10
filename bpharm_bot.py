@@ -6,10 +6,12 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = "https://zero2project-wutc.onrender.com/webhook"
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
 PAPER_FOLDER = "bpharm_bot_18"
 
 app = Flask(__name__)
+application = Application.builder().token(TOKEN).build()
 
 # Semester-subject mapping
 semesters = {
@@ -77,18 +79,14 @@ semesters = {
 }
 
 
-# Create Application
-application = Application.builder().token(TOKEN).build()
-
-# Handler: /start
+# Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters
     ]
     keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
-    await update.message.reply_text("📚 B.Pharm Study Material\nSelect Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Handler: Semester selected
 async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -98,12 +96,14 @@ async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
     await query.edit_message_text(f"📘 {sem} Subjects:\nSelect one:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Handler: Subject selected
 async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     subject = query.data
     semester = context.user_data.get("semester")
+    if not semester:
+        await query.message.reply_text("❗Please select a semester first using /start")
+        return
 
     filename = subject.replace(" ", "_").replace("-", "").replace("/", "") + ".pdf"
     folder = semester.replace(" ", "_")
@@ -114,28 +114,27 @@ async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.message.reply_text("❌ File not found!")
 
-# Add handlers
+# Register handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
 application.add_handler(CallbackQueryHandler(subject_selected))
 
 
 @app.route("/")
-def index():
-    return "Bot is running on Render!"
+def home():
+    return "Bot is Live on Render!"
 
 
-@app.route("/webhook", methods=["POST"])
-async def handle_webhook():
+@app.route(WEBHOOK_PATH, methods=["POST"])
+async def webhook():
     data = await request.get_json()
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
-    return "OK", 200
+    return "ok", 200
 
 
-# Set webhook when app starts
 @app.before_first_request
-def set_webhook():
+def setup_webhook():
     import asyncio
     asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
 
