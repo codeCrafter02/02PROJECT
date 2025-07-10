@@ -1,14 +1,20 @@
 import os
 from flask import Flask, request
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler
+from telegram.ext import CommandHandler, CallbackQueryHandler, ApplicationBuilder
+from telegram.ext import ContextTypes
 
-# 🔐 Bot token and folder
-TOKEN = os.environ.get("BOT_TOKEN")
+# Bot token from environment
+TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
+
+# PDF folder
 PAPER_FOLDER = "bpharm_bot_18"
 
-# 📚 Semester -> Subjects
+# Flask app
+app = Flask(__name__)
+
+# Semester -> Subjects
 semesters = {
     "1st Semester": [
         "Human Anatomy and Physiology I",
@@ -65,56 +71,56 @@ semesters = {
     ],
 }
 
-# 🌐 Flask app + Dispatcher
-app = Flask(__name__)
-dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
+# Create application
+application = ApplicationBuilder().token(TOKEN).build()
 
-# ✅ /start
-def start(update, context):
+# /start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters]
     keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
-    update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ✅ Semester handler
-def semester_selected(update, context):
+# Semester selection
+async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     sem = query.data
     context.user_data["semester"] = sem
     subjects = semesters.get(sem, [])
     keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
-    query.edit_message_text(f"📘 {sem} selected.\nSelect Subject:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(f"📘 {sem} selected.\nSelect Subject:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ✅ Subject handler
-def subject_selected(update, context):
+# Subject selection
+async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     subject = query.data
     semester = context.user_data.get("semester")
     if semester is None:
-        query.message.reply_text("❗Please select a semester first using /start.")
+        await query.message.reply_text("❗Please select a semester first using /start.")
         return
     subject_file = subject.replace(" ", "_") + ".pdf"
     folder = semester.replace(" ", "_")
     filepath = os.path.join(PAPER_FOLDER, folder, subject_file)
     if os.path.exists(filepath):
-        query.message.reply_document(open(filepath, "rb"), caption=f"📄 {subject}")
+        await query.message.reply_document(open(filepath, "rb"), caption=f"📄 {subject}")
     else:
-        query.message.reply_text("❌ File not found.")
+        await query.message.reply_text("❌ File not found.")
 
-# ✅ Add handlers
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
-dispatcher.add_handler(CallbackQueryHandler(subject_selected))
+# Register handlers
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
+application.add_handler(CallbackQueryHandler(subject_selected))
 
-# 🔁 Webhook route
+# Flask webhook endpoint
 @app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
+async def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, bot)
+    await application.process_update(update)
     return "ok"
 
-@app.route("/", methods=["GET"])
+# Health check
+@app.route("/")
 def home():
     return "Bot is running!"
-
