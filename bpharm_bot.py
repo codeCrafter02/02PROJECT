@@ -12,68 +12,60 @@ app = Flask(__name__)
 
 # Semester-subject mapping
 semesters = {
-    "1st Semester": [
-        "Human Anatomy and Physiology I - Theory",
-        "Pharmaceutical Analysis I - Theory",
-        "Pharmaceutics I - Theory",
-        "Pharmaceutical Inorganic Chemistry - Theory",
-        "Communication Skills - Theory",
-        "Remedial Biology/Mathematics - Theory"
+ "1st Semester": [
+        "Human Anatomy and Physiology I",
+        "Pharmaceutical Analysis I",
+        "Pharmaceutics I",
+        "Pharmaceutical Inorganic Chemistry",
     ],
     "2nd Semester": [
-        "Human Anatomy and Physiology II - Theory",
-        "Pharmaceutical Organic Chemistry I - Theory",
-        "Biochemistry - Theory",
-        "Pathophysiology - Theory",
-        "Computer Applications in Pharmacy - Theory",
-        "Environmental Sciences - Theory"
+        "Human Anatomy and Physiology II",
+        "Pharmaceutical Organic Chemistry I",
+        "Biochemistry",
+        "Pathophysiology",
     ],
     "3rd Semester": [
-        "Pharmaceutical Organic Chemistry II - Theory",
-        "Physical Pharmaceutics I - Theory",
-        "Pharmaceutical Microbiology - Theory",
-        "Pharmaceutical Engineering - Theory",
-        "Pharmacognosy and Phytochemistry I - Theory"
+        "Pharmaceutical Organic Chemistry II",
+        "Physical Pharmaceutics I",
+        "Pharmaceutical Microbiology",
+        "Pharmaceutical Engineering",
+        "Universal Human Values",
     ],
     "4th Semester": [
-        "Pharmaceutical Organic Chemistry III - Theory",
-        "Medicinal Chemistry I - Theory",
-        "Physical Pharmaceutics II - Theory",
-        "Pharmacology I - Theory",
-        "Pharmacognosy and Phytochemistry II - Theory",
-        "Pharmaceutical Jurisprudence - Theory"
+        "Pharmaceutical Organic Chemistry III",
+        "Medicinal Chemistry I",
+        "Physical Pharmaceutics II",
+        "Pharmacology I",
+        "Pharmacognosy I",
     ],
     "5th Semester": [
-        "Medicinal Chemistry II - Theory",
-        "Industrial Pharmacy I - Theory",
-        "Pharmacology II - Theory",
-        "Pharmacognosy and Phytochemistry III - Theory",
-        "Pharmaceutical Biotechnology - Theory"
+        "Medicinal Chemistry II",
+        "Industrial Pharmacy I",
+        "Pharmacology II",
+        "Pharmacognosy and Phytochemistry",
+        "Pharmaceutical Jurisprudence Theory",
     ],
     "6th Semester": [
-        "Medicinal Chemistry III - Theory",
-        "Pharmacology III - Theory",
-        "Herbal Drug Technology - Theory",
-        "Biopharmaceutics and Pharmacokinetics - Theory",
-        "Pharmaceutical Quality Assurance - Theory",
-        "Instrumental Methods of Analysis - Theory"
+        "Medicinal Chemistry III",
+        "Pharmacology III",
+        "Herbal Drug Technology Theory",
+        "Biopharmaceutics and Pharmacokinetics Theory",
+        "Pharmaceutical Biotechnology",
+        "Quality Assurance Theory",
     ],
     "7th Semester": [
-        "Instrumental Methods of Analysis - Theory",
-        "Industrial Pharmacy II - Theory",
-        "Pharmacy Practice - Theory",
-        "Novel Drug Delivery System - Theory",
-        "Biostatistics and Research Methodology - Theory"
+        "Instrumental Methods of Analysis",
+        "Industrial Pharmacy II",
+        "Pharmacy Practice",
+        "Novel Drug Delivery System",
     ],
     "8th Semester": [
-        "Biostatistics and Research Methodology - Theory",
-        "Social and Preventive Pharmacy - Theory",
-        "Pharma Marketing Management - Theory",
-        "Quality Control and Standardization of Herbals - Theory",
-        "Computer-Aided Drug Design - Theory",
-        "Cell and Molecular Biology - Theory"
-    ]
-}
+        "Biostatistics and Research Methodology",
+        "Social and Preventive Pharmacy",
+        "Pharma Marketing Management",
+        "Cosmetic Science",
+    ],    
+    }
 
 # Store user data in memory
 user_data = {}
