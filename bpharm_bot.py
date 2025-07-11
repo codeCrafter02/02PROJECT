@@ -1,10 +1,8 @@
 import os
 import asyncio
+import threading
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-from telegram.ext import (
-    CommandHandler, CallbackQueryHandler, ContextTypes
-)
 import logging
 
 # Set up logging
@@ -22,7 +20,7 @@ PAPER_FOLDER = "bpharm_bot_18"
 app = Flask(__name__)
 
 # Initialize bot
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN) if TOKEN else None
 
 # Semester-subject mapping
 semesters = {
@@ -89,18 +87,41 @@ semesters = {
     ]
 }
 
-# Store user data in memory (since we can't use Application context)
+# Store user data in memory
 user_data = {}
 
+# Global event loop for async operations
+loop = None
+loop_thread = None
+
+def start_background_loop():
+    """Start event loop in background thread"""
+    global loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+def get_or_create_loop():
+    """Get or create event loop"""
+    global loop, loop_thread
+    if loop is None or loop.is_closed():
+        if loop_thread is None or not loop_thread.is_alive():
+            loop_thread = threading.Thread(target=start_background_loop, daemon=True)
+            loop_thread.start()
+            # Wait a bit for loop to be ready
+            import time
+            time.sleep(0.1)
+    return loop
+
 # Handlers
-async def start(update: Update, context=None):
+async def start(update: Update):
     keyboard = [
         [InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters
     ]
     keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
     await update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def semester_selected(update: Update, context=None):
+async def semester_selected(update: Update):
     query = update.callback_query
     await query.answer()
     sem = query.data
@@ -113,7 +134,7 @@ async def semester_selected(update: Update, context=None):
     keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
     await query.edit_message_text(f"📘 {sem} Subjects:\nSelect one:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def subject_selected(update: Update, context=None):
+async def subject_selected(update: Update):
     query = update.callback_query
     await query.answer()
     subject = query.data
@@ -131,11 +152,15 @@ async def subject_selected(update: Update, context=None):
     folder = semester.replace(" ", "_")
     filepath = os.path.join(PAPER_FOLDER, folder, filename)
 
-    if os.path.exists(filepath):
-        with open(filepath, "rb") as doc:
-            await query.message.reply_document(doc, caption=f"📄 {subject}")
-    else:
-        await query.message.reply_text("❌ File not found!")
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, "rb") as doc:
+                await query.message.reply_document(doc, caption=f"📄 {subject}")
+        else:
+            await query.message.reply_text("❌ File not found!")
+    except Exception as e:
+        logger.error(f"Error sending document: {e}")
+        await query.message.reply_text("❌ Error sending file. Please try again.")
 
 async def handle_update(update: Update):
     """Handle different types of updates"""
@@ -151,27 +176,37 @@ async def handle_update(update: Update):
     except Exception as e:
         logger.error(f"Error handling update: {e}")
 
+def process_update_sync(update):
+    """Process update synchronously using background loop"""
+    try:
+        event_loop = get_or_create_loop()
+        future = asyncio.run_coroutine_threadsafe(handle_update(update), event_loop)
+        future.result(timeout=30)  # 30 second timeout
+    except Exception as e:
+        logger.error(f"Error processing update: {e}")
+
 @app.route("/")
 def home():
-    return "Bot is Live on Render!"
+    if not TOKEN:
+        return "❌ BOT_TOKEN environment variable not set!"
+    return "✅ Bot is Live on Render!"
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     try:
+        if not bot:
+            return "Bot not initialized - check BOT_TOKEN", 500
+            
         json_data = request.get_json()
         if not json_data:
             return "Bad Request", 400
             
         update = Update.de_json(json_data, bot)
         
-        # Create a new event loop for this request
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            loop.run_until_complete(handle_update(update))
-        finally:
-            loop.close()
+        # Process update in background thread
+        thread = threading.Thread(target=process_update_sync, args=(update,))
+        thread.daemon = True
+        thread.start()
         
         return "ok", 200
     except Exception as e:
@@ -181,19 +216,25 @@ def webhook():
 async def set_webhook():
     """Set up webhook for the bot"""
     try:
+        if not bot:
+            logger.error("Bot not initialized - BOT_TOKEN missing")
+            return
+            
         await bot.set_webhook(url=WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
 
 if __name__ == "__main__":
-    # Setup webhook
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(set_webhook())
-    finally:
-        loop.close()
+    if not TOKEN:
+        logger.error("BOT_TOKEN environment variable not set!")
+        print("❌ BOT_TOKEN environment variable not set!")
+    else:
+        # Setup webhook
+        try:
+            asyncio.run(set_webhook())
+        except Exception as e:
+            logger.error(f"Error setting webhook: {e}")
     
     # Run Flask app
     port = int(os.environ.get("PORT", 5000))
