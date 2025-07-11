@@ -1,18 +1,27 @@
 import os
-from flask import Flask, request
+import asyncio
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes
 )
+import logging
 
-app = Flask(__name__)
-TOKEN = os.getenv("BOT_TOKEN")  # Set in Render environment variables
+# Set up logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
 PAPER_FOLDER = "bpharm_bot_18"
 
-# Complete B.Pharm Semester-Subject Mapping (PCI Syllabus)
+app = Flask(__name__)
+
+# Semester-subject mapping
 semesters = {
     "1st Semester": [
         "Human Anatomy and Physiology I - Theory",
@@ -20,8 +29,7 @@ semesters = {
         "Pharmaceutics I - Theory",
         "Pharmaceutical Inorganic Chemistry - Theory",
         "Communication Skills - Theory",
-        "Remedial Biology - Theory",
-        "Remedial Mathematics - Theory"
+        "Remedial Biology/Mathematics - Theory"
     ],
     "2nd Semester": [
         "Human Anatomy and Physiology II - Theory",
@@ -36,8 +44,7 @@ semesters = {
         "Physical Pharmaceutics I - Theory",
         "Pharmaceutical Microbiology - Theory",
         "Pharmaceutical Engineering - Theory",
-        "Pharmacognosy and Phytochemistry I - Theory",
-        "Universal Human Values - Theory"
+        "Pharmacognosy and Phytochemistry I - Theory"
     ],
     "4th Semester": [
         "Pharmaceutical Organic Chemistry III - Theory",
@@ -79,90 +86,103 @@ semesters = {
     ]
 }
 
+# Initialize application globally
+application = None
+
 def create_application():
-    """Initialize Telegram Application"""
-    application = Application.builder().token(TOKEN).build()
-    
-    # Register handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
-    application.add_handler(CallbackQueryHandler(subject_selected))
-    
+    """Create and configure the telegram application"""
+    global application
+    if application is None:
+        application = Application.builder().token(TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
+        application.add_handler(CallbackQueryHandler(subject_selected))
+        
+        logger.info("Application created and handlers added")
     return application
 
+# Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send semester selection menu"""
     keyboard = [
-        [InlineKeyboardButton(sem, callback_data=sem)] 
-        for sem in sorted(semesters.keys())  # Sorted semesters
+        [InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters
     ]
-    keyboard.append([
-        InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")
-    ])
-    await update.message.reply_text(
-        "📚 B.Pharm Study Material (PCI Syllabus)\nSelect Semester:", 
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
+    await update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle semester selection"""
     query = update.callback_query
     await query.answer()
     sem = query.data
     context.user_data["semester"] = sem
     subjects = semesters[sem]
-    
-    keyboard = [
-        [InlineKeyboardButton(subj, callback_data=subj)] 
-        for subj in sorted(subjects)  # Sorted subjects
-    ]
-    await query.edit_message_text(
-        f"📘 {sem} Subjects:\nSelect one:", 
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
+    await query.edit_message_text(f"📘 {sem} Subjects:\nSelect one:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send PDF for selected subject"""
     query = update.callback_query
     await query.answer()
-    
     subject = query.data
     semester = context.user_data.get("semester")
-    
     if not semester:
         await query.message.reply_text("❗Please select a semester first using /start")
         return
-    
-    # Generate standardized filename
-    filename = (subject.replace(" - ", "_")
-                      .replace(" ", "_")
-                      .replace("/", "_") + ".pdf")
+
+    filename = subject.replace(" ", "_").replace("-", "").replace("/", "") + ".pdf"
     folder = semester.replace(" ", "_")
     filepath = os.path.join(PAPER_FOLDER, folder, filename)
-    
-    try:
-        if os.path.exists(filepath):
-            await query.message.reply_document(
-                open(filepath, "rb"),
-                caption=f"📄 {semester}\n{subject}"
-            )
-        else:
-            await query.message.reply_text(f"❌ Material not available for:\n{subject}")
-    except Exception as e:
-        await query.message.reply_text(f"⚠️ Error loading file: {str(e)}")
 
-@app.post("/webhook")
-async def webhook():
-    """Handle Telegram updates"""
-    application = create_application()
-    data = await request.get_json()
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
-    return "", 200
+    if os.path.exists(filepath):
+        with open(filepath, "rb") as doc:
+            await query.message.reply_document(doc, caption=f"📄 {subject}")
+    else:
+        await query.message.reply_text("❌ File not found!")
 
-@app.get("/")
+@app.route("/")
 def home():
-    return "B.Pharm Bot is running!"
+    return "Bot is Live on Render!"
+
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
+    try:
+        json_data = request.get_json()
+        if not json_data:
+            return "Bad Request", 400
+            
+        update = Update.de_json(json_data, application.bot)
+        
+        # Process update in the background
+        asyncio.create_task(application.process_update(update))
+        
+        return "ok", 200
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        return "Internal Server Error", 500
+
+async def set_webhook():
+    """Set up webhook for the bot"""
+    try:
+        app_instance = create_application()
+        await app_instance.bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"Webhook set to {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+
+def setup_webhook():
+    """Setup webhook in a synchronous context"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(set_webhook())
+    finally:
+        loop.close()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # Create application and setup webhook
+    create_application()
+    setup_webhook()
+    
+    # Run Flask app
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
