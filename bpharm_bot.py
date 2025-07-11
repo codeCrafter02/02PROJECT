@@ -1,16 +1,7 @@
 import os
-import asyncio
-import threading
-from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-import logging
-
-# Set up logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+import requests
+import json
+from flask import Flask, request
 
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = "/webhook"
@@ -18,9 +9,6 @@ WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
 PAPER_FOLDER = "bpharm_bot_18"
 
 app = Flask(__name__)
-
-# Initialize bot
-bot = Bot(token=TOKEN) if TOKEN else None
 
 # Semester-subject mapping
 semesters = {
@@ -90,100 +78,108 @@ semesters = {
 # Store user data in memory
 user_data = {}
 
-# Global event loop for async operations
-loop = None
-loop_thread = None
-
-def start_background_loop():
-    """Start event loop in background thread"""
-    global loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-def get_or_create_loop():
-    """Get or create event loop"""
-    global loop, loop_thread
-    if loop is None or loop.is_closed():
-        if loop_thread is None or not loop_thread.is_alive():
-            loop_thread = threading.Thread(target=start_background_loop, daemon=True)
-            loop_thread.start()
-            # Wait a bit for loop to be ready
-            import time
-            time.sleep(0.1)
-    return loop
-
-# Handlers
-async def start(update: Update):
-    keyboard = [
-        [InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters
-    ]
-    keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
-    await update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def semester_selected(update: Update):
-    query = update.callback_query
-    await query.answer()
-    sem = query.data
+def send_message(chat_id, text, reply_markup=None):
+    """Send message using requests"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
     
-    # Store user data
-    user_id = query.from_user.id
-    user_data[user_id] = {"semester": sem}
-    
-    subjects = semesters[sem]
-    keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
-    await query.edit_message_text(f"📘 {sem} Subjects:\nSelect one:", reply_markup=InlineKeyboardMarkup(keyboard))
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Error sending message: {e}")
+        return None
 
-async def subject_selected(update: Update):
-    query = update.callback_query
-    await query.answer()
-    subject = query.data
-    user_id = query.from_user.id
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    """Edit message using requests"""
+    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
+    data = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text
+    }
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
     
-    # Get user's semester
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Error editing message: {e}")
+        return None
+
+def send_document(chat_id, file_path, caption=None):
+    """Send document using requests"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption
+    
+    try:
+        with open(file_path, "rb") as doc:
+            files = {"document": doc}
+            response = requests.post(url, data=data, files=files, timeout=30)
+        return response.json()
+    except Exception as e:
+        print(f"Error sending document: {e}")
+        return None
+
+def answer_callback_query(callback_query_id):
+    """Answer callback query"""
+    url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    data = {"callback_query_id": callback_query_id}
+    try:
+        response = requests.post(url, json=data, timeout=5)
+        return response.json()
+    except Exception as e:
+        print(f"Error answering callback: {e}")
+        return None
+
+def handle_start(chat_id):
+    """Handle /start command"""
+    keyboard = []
+    for sem in semesters:
+        keyboard.append([{"text": sem, "callback_data": sem}])
+    
+    keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
+    
+    reply_markup = {"inline_keyboard": keyboard}
+    send_message(chat_id, "📚 Select Semester:", reply_markup)
+
+def handle_semester_selection(chat_id, message_id, user_id, semester):
+    """Handle semester selection"""
+    user_data[user_id] = {"semester": semester}
+    
+    subjects = semesters[semester]
+    keyboard = []
+    for subject in subjects:
+        keyboard.append([{"text": subject, "callback_data": subject}])
+    
+    reply_markup = {"inline_keyboard": keyboard}
+    edit_message(chat_id, message_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
+
+def handle_subject_selection(chat_id, user_id, subject):
+    """Handle subject selection"""
     user_info = user_data.get(user_id, {})
     semester = user_info.get("semester")
     
     if not semester:
-        await query.message.reply_text("❗Please select a semester first using /start")
+        send_message(chat_id, "❗Please select a semester first using /start")
         return
-
+    
     filename = subject.replace(" ", "_").replace("-", "").replace("/", "") + ".pdf"
     folder = semester.replace(" ", "_")
     filepath = os.path.join(PAPER_FOLDER, folder, filename)
-
-    try:
-        if os.path.exists(filepath):
-            with open(filepath, "rb") as doc:
-                await query.message.reply_document(doc, caption=f"📄 {subject}")
-        else:
-            await query.message.reply_text("❌ File not found!")
-    except Exception as e:
-        logger.error(f"Error sending document: {e}")
-        await query.message.reply_text("❌ Error sending file. Please try again.")
-
-async def handle_update(update: Update):
-    """Handle different types of updates"""
-    try:
-        if update.message and update.message.text and update.message.text.startswith('/start'):
-            await start(update)
-        elif update.callback_query:
-            query_data = update.callback_query.data
-            if query_data in semesters:
-                await semester_selected(update)
-            else:
-                await subject_selected(update)
-    except Exception as e:
-        logger.error(f"Error handling update: {e}")
-
-def process_update_sync(update):
-    """Process update synchronously using background loop"""
-    try:
-        event_loop = get_or_create_loop()
-        future = asyncio.run_coroutine_threadsafe(handle_update(update), event_loop)
-        future.result(timeout=30)  # 30 second timeout
-    except Exception as e:
-        logger.error(f"Error processing update: {e}")
+    
+    if os.path.exists(filepath):
+        send_document(chat_id, filepath, f"📄 {subject}")
+    else:
+        send_message(chat_id, "❌ File not found!")
 
 @app.route("/")
 def home():
@@ -194,47 +190,54 @@ def home():
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     try:
-        if not bot:
+        if not TOKEN:
             return "Bot not initialized - check BOT_TOKEN", 500
             
-        json_data = request.get_json()
-        if not json_data:
+        data = request.get_json()
+        if not data:
             return "Bad Request", 400
-            
-        update = Update.de_json(json_data, bot)
         
-        # Process update in background thread
-        thread = threading.Thread(target=process_update_sync, args=(update,))
-        thread.daemon = True
-        thread.start()
+        # Handle message
+        if "message" in data:
+            message = data["message"]
+            chat_id = message["chat"]["id"]
+            
+            if "text" in message and message["text"].startswith("/start"):
+                handle_start(chat_id)
+        
+        # Handle callback query
+        elif "callback_query" in data:
+            callback_query = data["callback_query"]
+            callback_query_id = callback_query["id"]
+            chat_id = callback_query["message"]["chat"]["id"]
+            message_id = callback_query["message"]["message_id"]
+            user_id = callback_query["from"]["id"]
+            callback_data = callback_query["data"]
+            
+            # Answer callback query
+            answer_callback_query(callback_query_id)
+            
+            # Handle the callback
+            if callback_data in semesters:
+                handle_semester_selection(chat_id, message_id, user_id, callback_data)
+            else:
+                handle_subject_selection(chat_id, user_id, callback_data)
         
         return "ok", 200
+    
     except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
+        print(f"Error processing webhook: {e}")
         return "Internal Server Error", 500
 
-async def set_webhook():
-    """Set up webhook for the bot"""
-    try:
-        if not bot:
-            logger.error("Bot not initialized - BOT_TOKEN missing")
-            return
-            
-        await bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
-
 if __name__ == "__main__":
-    if not TOKEN:
-        logger.error("BOT_TOKEN environment variable not set!")
-        print("❌ BOT_TOKEN environment variable not set!")
-    else:
-        # Setup webhook
+    # Set webhook
+    if TOKEN:
         try:
-            asyncio.run(set_webhook())
+            webhook_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
+            response = requests.post(webhook_url, json={"url": WEBHOOK_URL})
+            print(f"Webhook setup: {response.json()}")
         except Exception as e:
-            logger.error(f"Error setting webhook: {e}")
+            print(f"Error setting webhook: {e}")
     
     # Run Flask app
     port = int(os.environ.get("PORT", 5000))
