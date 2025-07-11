@@ -1,9 +1,9 @@
 import os
 import asyncio
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes
+    CommandHandler, CallbackQueryHandler, ContextTypes
 )
 import logging
 
@@ -20,6 +20,9 @@ WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
 PAPER_FOLDER = "bpharm_bot_18"
 
 app = Flask(__name__)
+
+# Initialize bot
+bot = Bot(token=TOKEN)
 
 # Semester-subject mapping
 semesters = {
@@ -86,45 +89,40 @@ semesters = {
     ]
 }
 
-# Initialize application globally
-application = None
-
-def create_application():
-    """Create and configure the telegram application"""
-    global application
-    if application is None:
-        application = Application.builder().token(TOKEN).build()
-        
-        # Add handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CallbackQueryHandler(semester_selected, pattern="^(" + "|".join(semesters.keys()) + ")$"))
-        application.add_handler(CallbackQueryHandler(subject_selected))
-        
-        logger.info("Application created and handlers added")
-    return application
+# Store user data in memory (since we can't use Application context)
+user_data = {}
 
 # Handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context=None):
     keyboard = [
         [InlineKeyboardButton(sem, callback_data=sem)] for sem in semesters
     ]
     keyboard.append([InlineKeyboardButton("📩 Feedback", url="https://codecrafter02.github.io/Feedback02/")])
     await update.message.reply_text("📚 Select Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def semester_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def semester_selected(update: Update, context=None):
     query = update.callback_query
     await query.answer()
     sem = query.data
-    context.user_data["semester"] = sem
+    
+    # Store user data
+    user_id = query.from_user.id
+    user_data[user_id] = {"semester": sem}
+    
     subjects = semesters[sem]
     keyboard = [[InlineKeyboardButton(subj, callback_data=subj)] for subj in subjects]
     await query.edit_message_text(f"📘 {sem} Subjects:\nSelect one:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def subject_selected(update: Update, context=None):
     query = update.callback_query
     await query.answer()
     subject = query.data
-    semester = context.user_data.get("semester")
+    user_id = query.from_user.id
+    
+    # Get user's semester
+    user_info = user_data.get(user_id, {})
+    semester = user_info.get("semester")
+    
     if not semester:
         await query.message.reply_text("❗Please select a semester first using /start")
         return
@@ -139,6 +137,20 @@ async def subject_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.message.reply_text("❌ File not found!")
 
+async def handle_update(update: Update):
+    """Handle different types of updates"""
+    try:
+        if update.message and update.message.text and update.message.text.startswith('/start'):
+            await start(update)
+        elif update.callback_query:
+            query_data = update.callback_query.data
+            if query_data in semesters:
+                await semester_selected(update)
+            else:
+                await subject_selected(update)
+    except Exception as e:
+        logger.error(f"Error handling update: {e}")
+
 @app.route("/")
 def home():
     return "Bot is Live on Render!"
@@ -150,10 +162,16 @@ def webhook():
         if not json_data:
             return "Bad Request", 400
             
-        update = Update.de_json(json_data, application.bot)
+        update = Update.de_json(json_data, bot)
         
-        # Process update in the background
-        asyncio.create_task(application.process_update(update))
+        # Create a new event loop for this request
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            loop.run_until_complete(handle_update(update))
+        finally:
+            loop.close()
         
         return "ok", 200
     except Exception as e:
@@ -163,25 +181,19 @@ def webhook():
 async def set_webhook():
     """Set up webhook for the bot"""
     try:
-        app_instance = create_application()
-        await app_instance.bot.set_webhook(url=WEBHOOK_URL)
+        await bot.set_webhook(url=WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
 
-def setup_webhook():
-    """Setup webhook in a synchronous context"""
+if __name__ == "__main__":
+    # Setup webhook
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(set_webhook())
     finally:
         loop.close()
-
-if __name__ == "__main__":
-    # Create application and setup webhook
-    create_application()
-    setup_webhook()
     
     # Run Flask app
     port = int(os.environ.get("PORT", 5000))
