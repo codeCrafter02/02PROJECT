@@ -165,29 +165,6 @@ def handle_semester_selection(chat_id, message_id, user_id, semester):
     reply_markup = {"inline_keyboard": keyboard}
     edit_message(chat_id, message_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
 
-def handle_subject_selection(chat_id, user_id, subject):
-    """After subject selection, show buttons for Previous Year / Guess Paper"""
-    user_info = user_data.get(user_id, {})
-    semester = user_info.get("semester")
-
-    if not semester:
-        send_message(chat_id, "❗Please select a semester first using /start")
-        return
-
-    # Save chosen subject
-    if user_id not in user_data:
-        user_data[user_id] = {}
-    user_data[user_id]["subject"] = subject
-
-    # Two choices
-    keyboard = [
-        [{"text": "📄 Previous Year", "callback_data": f"PY::{user_id}"}],
-        [{"text": "📝 Guess Paper", "callback_data": f"GP::{user_id}"}],
-        [{"text": "⬅️ Back to Subjects", "callback_data": f"BACK_SUBJECTS"}],
-    ]
-    reply_markup = {"inline_keyboard": keyboard}
-    send_message(chat_id, f"Choose file for: {subject}", reply_markup)
-
 def send_previous_year(chat_id, user_id):
     info = user_data.get(user_id, {})
     semester = info.get("semester")
@@ -219,6 +196,56 @@ def send_guess_paper(chat_id, user_id):
         send_document(chat_id, guess_path, f"📝 Guess Paper • {subject}")
     else:
         send_message(chat_id, "❌ Guess paper not found!")
+
+def handle_subject_selection(chat_id, user_id, subject):
+    """After subject selection, immediately send Previous Year + Guess Paper PDFs"""
+    user_info = user_data.get(user_id, {})
+    semester = user_info.get("semester")
+
+    if not semester:
+        send_message(chat_id, "❗Please select a semester first using /start")
+        return
+
+    # Save chosen subject
+    user_data.setdefault(user_id, {})["subject"] = subject
+
+    # Inform user
+    send_message(chat_id, f"📂 Loading files for: {subject}")
+
+    # Send both files (Previous Year and Guess Paper)
+    base = make_base_filename(subject)
+    folder = semester.replace(" ", "_")
+
+    prev_path = os.path.join(PAPER_FOLDER, folder, f"{base}.pdf")
+    guess_path = os.path.join(PAPER_FOLDER, folder, f"{base}_Guess.pdf")
+
+    any_sent = False
+
+    if os.path.exists(prev_path):
+        send_document(chat_id, prev_path, f"📄 Previous Year • {subject}")
+        any_sent = True
+    else:
+        send_message(chat_id, "❌ Previous year file not found!")
+
+    if os.path.exists(guess_path):
+        send_document(chat_id, guess_path, f"📝 Guess Paper • {subject}")
+        any_sent = True
+    else:
+        send_message(chat_id, "❌ Guess paper not found!")
+
+    # Optionally still offer navigation back to subjects
+    keyboard = [
+        [{"text": "⬅️ Back to Subjects", "callback_data": "BACK_SUBJECTS"}],
+    ]
+    send_message(chat_id, "Choose next action:", {"inline_keyboard": keyboard})
+
+    # If you prefer to keep the old buttons as well, uncomment below:
+    # keyboard = [
+    #     [{"text": "📄 Previous Year", "callback_data": f"PY::{user_id}"}],
+    #     [{"text": "📝 Guess Paper", "callback_data": f"GP::{user_id}"}],
+    #     [{"text": "⬅️ Back to Subjects", "callback_data": f"BACK_SUBJECTS"}],
+    # ]
+    # send_message(chat_id, f"Choose file for: {subject}", {"inline_keyboard": keyboard})
 
 def handle_back_to_subjects(chat_id, message_id, user_id):
     """Show subject list again"""
@@ -280,7 +307,6 @@ def webhook():
                 handle_back_to_subjects(chat_id, message_id, user_id)
 
             elif callback_data.startswith("PY::"):
-                # callback_data contains PY::<user_id> but we rely on actual user_id
                 send_previous_year(chat_id, user_id)
 
             elif callback_data.startswith("GP::"):
