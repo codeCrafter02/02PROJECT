@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # Semester-subject mapping
 semesters = {
- "1st Semester": [
+    "1st Semester": [
         "Human Anatomy and Physiology I",
         "Pharmaceutical Analysis I",
         "Pharmaceutics I",
@@ -64,11 +64,18 @@ semesters = {
         "Social and Preventive Pharmacy",
         "Pharma Marketing Management",
         "Cosmetic Science",
-    ],    
-    }
+    ],
+}
 
 # Store user data in memory
 user_data = {}
+
+# -------------------------
+# Utilities
+# -------------------------
+def make_base_filename(subject: str) -> str:
+    # Convert to your storage naming: spaces -> _, remove '-' and '/'
+    return subject.replace(" ", "_").replace("-", "").replace("/", "")
 
 def send_message(chat_id, text, reply_markup=None):
     """Send message using requests"""
@@ -79,7 +86,7 @@ def send_message(chat_id, text, reply_markup=None):
     }
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
-    
+
     try:
         response = requests.post(url, json=data, timeout=10)
         return response.json()
@@ -97,7 +104,7 @@ def edit_message(chat_id, message_id, text, reply_markup=None):
     }
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
-    
+
     try:
         response = requests.post(url, json=data, timeout=10)
         return response.json()
@@ -111,7 +118,7 @@ def send_document(chat_id, file_path, caption=None):
     data = {"chat_id": chat_id}
     if caption:
         data["caption"] = caption
-    
+
     try:
         with open(file_path, "rb") as doc:
             files = {"document": doc}
@@ -132,47 +139,103 @@ def answer_callback_query(callback_query_id):
         print(f"Error answering callback: {e}")
         return None
 
+# -------------------------
+# Handlers
+# -------------------------
 def handle_start(chat_id):
     """Handle /start command"""
     keyboard = []
     for sem in semesters:
         keyboard.append([{"text": sem, "callback_data": sem}])
-    
+
     keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
-    
+
     reply_markup = {"inline_keyboard": keyboard}
     send_message(chat_id, "📚 Select Semester:", reply_markup)
 
 def handle_semester_selection(chat_id, message_id, user_id, semester):
     """Handle semester selection"""
     user_data[user_id] = {"semester": semester}
-    
+
     subjects = semesters[semester]
     keyboard = []
     for subject in subjects:
         keyboard.append([{"text": subject, "callback_data": subject}])
-    
+
     reply_markup = {"inline_keyboard": keyboard}
     edit_message(chat_id, message_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
 
 def handle_subject_selection(chat_id, user_id, subject):
-    """Handle subject selection"""
+    """After subject selection, show buttons for Previous Year / Guess Paper"""
     user_info = user_data.get(user_id, {})
     semester = user_info.get("semester")
-    
+
     if not semester:
         send_message(chat_id, "❗Please select a semester first using /start")
         return
-    
-    filename = subject.replace(" ", "_").replace("-", "").replace("/", "") + ".pdf"
-    folder = semester.replace(" ", "_")
-    filepath = os.path.join(PAPER_FOLDER, folder, filename)
-    
-    if os.path.exists(filepath):
-        send_document(chat_id, filepath, f"📄 {subject}")
-    else:
-        send_message(chat_id, "❌ File not found!")
 
+    # Save chosen subject
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    user_data[user_id]["subject"] = subject
+
+    # Two choices
+    keyboard = [
+        [{"text": "📄 Previous Year", "callback_data": f"PY::{user_id}"}],
+        [{"text": "📝 Guess Paper", "callback_data": f"GP::{user_id}"}],
+        [{"text": "⬅️ Back to Subjects", "callback_data": f"BACK_SUBJECTS"}],
+    ]
+    reply_markup = {"inline_keyboard": keyboard}
+    send_message(chat_id, f"Choose file for: {subject}", reply_markup)
+
+def send_previous_year(chat_id, user_id):
+    info = user_data.get(user_id, {})
+    semester = info.get("semester")
+    subject = info.get("subject")
+    if not semester or not subject:
+        send_message(chat_id, "❗Please select a semester and subject first using /start")
+        return
+
+    base = make_base_filename(subject)
+    folder = semester.replace(" ", "_")
+    filepath = os.path.join(PAPER_FOLDER, folder, f"{base}.pdf")
+    if os.path.exists(filepath):
+        send_document(chat_id, filepath, f"📄 Previous Year • {subject}")
+    else:
+        send_message(chat_id, "❌ Previous year file not found!")
+
+def send_guess_paper(chat_id, user_id):
+    info = user_data.get(user_id, {})
+    semester = info.get("semester")
+    subject = info.get("subject")
+    if not semester or not subject:
+        send_message(chat_id, "❗Please select a semester and subject first using /start")
+        return
+
+    base = make_base_filename(subject)
+    folder = semester.replace(" ", "_")
+    guess_path = os.path.join(PAPER_FOLDER, folder, f"{base}_Guess.pdf")
+    if os.path.exists(guess_path):
+        send_document(chat_id, guess_path, f"📝 Guess Paper • {subject}")
+    else:
+        send_message(chat_id, "❌ Guess paper not found!")
+
+def handle_back_to_subjects(chat_id, message_id, user_id):
+    """Show subject list again"""
+    info = user_data.get(user_id, {})
+    semester = info.get("semester")
+    if not semester:
+        send_message(chat_id, "❗Please select a semester first using /start")
+        return
+
+    subjects = semesters[semester]
+    keyboard = [[{"text": subj, "callback_data": subj}] for subj in subjects]
+    reply_markup = {"inline_keyboard": keyboard}
+    send_message(chat_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
+
+# -------------------------
+# Flask routes
+# -------------------------
 @app.route("/")
 def home():
     if not TOKEN:
@@ -184,19 +247,19 @@ def webhook():
     try:
         if not TOKEN:
             return "Bot not initialized - check BOT_TOKEN", 500
-            
+
         data = request.get_json()
         if not data:
             return "Bad Request", 400
-        
+
         # Handle message
         if "message" in data:
             message = data["message"]
             chat_id = message["chat"]["id"]
-            
+
             if "text" in message and message["text"].startswith("/start"):
                 handle_start(chat_id)
-        
+
         # Handle callback query
         elif "callback_query" in data:
             callback_query = data["callback_query"]
@@ -205,32 +268,47 @@ def webhook():
             message_id = callback_query["message"]["message_id"]
             user_id = callback_query["from"]["id"]
             callback_data = callback_query["data"]
-            
-            # Answer callback query
+
+            # Answer callback to remove 'loading' on Telegram UI
             answer_callback_query(callback_query_id)
-            
-            # Handle the callback
+
+            # Routing
             if callback_data in semesters:
                 handle_semester_selection(chat_id, message_id, user_id, callback_data)
+
+            elif callback_data == "BACK_SUBJECTS":
+                handle_back_to_subjects(chat_id, message_id, user_id)
+
+            elif callback_data.startswith("PY::"):
+                # callback_data contains PY::<user_id> but we rely on actual user_id
+                send_previous_year(chat_id, user_id)
+
+            elif callback_data.startswith("GP::"):
+                send_guess_paper(chat_id, user_id)
+
             else:
+                # Treat as subject selection
                 handle_subject_selection(chat_id, user_id, callback_data)
-        
+
         return "ok", 200
-    
+
     except Exception as e:
         print(f"Error processing webhook: {e}")
         return "Internal Server Error", 500
 
+# -------------------------
+# Entrypoint
+# -------------------------
 if __name__ == "__main__":
-    # Set webhook
+    # Set webhook (optional if you're using setWebhook externally)
     if TOKEN:
         try:
             webhook_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-            response = requests.post(webhook_url, json={"url": WEBHOOK_URL})
+            response = requests.post(webhook_url, json={"url": WEBHOOK_URL}, timeout=10)
             print(f"Webhook setup: {response.json()}")
         except Exception as e:
             print(f"Error setting webhook: {e}")
-    
+
     # Run Flask app
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
