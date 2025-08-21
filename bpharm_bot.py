@@ -80,13 +80,9 @@ def make_base_filename(subject: str) -> str:
 def send_message(chat_id, text, reply_markup=None):
     """Send message using requests"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        "chat_id": chat_id,
-        "text": text
-    }
+    data = {"chat_id": chat_id, "text": text}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
-
     try:
         response = requests.post(url, json=data, timeout=10)
         return response.json()
@@ -97,14 +93,9 @@ def send_message(chat_id, text, reply_markup=None):
 def edit_message(chat_id, message_id, text, reply_markup=None):
     """Edit message using requests"""
     url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-    data = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text
-    }
+    data = {"chat_id": chat_id, "message_id": message_id, "text": text}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
-
     try:
         response = requests.post(url, json=data, timeout=10)
         return response.json()
@@ -118,11 +109,10 @@ def send_document(chat_id, file_path, caption=None):
     data = {"chat_id": chat_id}
     if caption:
         data["caption"] = caption
-
     try:
         with open(file_path, "rb") as doc:
             files = {"document": doc}
-            response = requests.post(url, data=data, files=files, timeout=30)
+            response = requests.post(url, data=data, files=files, timeout=60)
         return response.json()
     except Exception as e:
         print(f"Error sending document: {e}")
@@ -143,25 +133,20 @@ def answer_callback_query(callback_query_id):
 # Handlers
 # -------------------------
 def handle_start(chat_id):
-    """Handle /start command"""
-    keyboard = []
-    for sem in semesters:
-        keyboard.append([{"text": sem, "callback_data": sem}])
-
+    """Handle /start command -> show semester list"""
+    keyboard = [[{"text": sem, "callback_data": sem}]] for sem in semesters.keys()
+    # feedback link stays at bottom
     keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
-
     reply_markup = {"inline_keyboard": keyboard}
     send_message(chat_id, "📚 Select Semester:", reply_markup)
 
 def handle_semester_selection(chat_id, message_id, user_id, semester):
-    """Handle semester selection"""
+    """Handle semester selection -> save and show subjects"""
     user_data[user_id] = {"semester": semester}
-
     subjects = semesters[semester]
-    keyboard = []
-    for subject in subjects:
-        keyboard.append([{"text": subject, "callback_data": subject}])
-
+    keyboard = [[{"text": subject, "callback_data": subject}]] for subject in subjects
+    # Also give a way back to semester menu from subjects list
+    keyboard.append([{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}])
     reply_markup = {"inline_keyboard": keyboard}
     edit_message(chat_id, message_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
 
@@ -172,7 +157,6 @@ def send_previous_year(chat_id, user_id):
     if not semester or not subject:
         send_message(chat_id, "❗Please select a semester and subject first using /start")
         return
-
     base = make_base_filename(subject)
     folder = semester.replace(" ", "_")
     filepath = os.path.join(PAPER_FOLDER, folder, f"{base}.pdf")
@@ -188,7 +172,6 @@ def send_guess_paper(chat_id, user_id):
     if not semester or not subject:
         send_message(chat_id, "❗Please select a semester and subject first using /start")
         return
-
     base = make_base_filename(subject)
     folder = semester.replace(" ", "_")
     guess_path = os.path.join(PAPER_FOLDER, folder, f"{base}_Guess.pdf")
@@ -198,10 +181,9 @@ def send_guess_paper(chat_id, user_id):
         send_message(chat_id, "❌ Guess paper not found!")
 
 def handle_subject_selection(chat_id, user_id, subject):
-    """After subject selection, immediately send Previous Year + Guess Paper PDFs"""
+    """After subject selection, immediately send Previous Year + Guess Paper PDFs and show nav buttons"""
     user_info = user_data.get(user_id, {})
     semester = user_info.get("semester")
-
     if not semester:
         send_message(chat_id, "❗Please select a semester first using /start")
         return
@@ -209,46 +191,33 @@ def handle_subject_selection(chat_id, user_id, subject):
     # Save chosen subject
     user_data.setdefault(user_id, {})["subject"] = subject
 
-    # Inform user
+    # Notify and send both files
     send_message(chat_id, f"📂 Loading files for: {subject}")
 
-    # Send both files (Previous Year and Guess Paper)
     base = make_base_filename(subject)
     folder = semester.replace(" ", "_")
-
     prev_path = os.path.join(PAPER_FOLDER, folder, f"{base}.pdf")
     guess_path = os.path.join(PAPER_FOLDER, folder, f"{base}_Guess.pdf")
 
-    any_sent = False
-
     if os.path.exists(prev_path):
         send_document(chat_id, prev_path, f"📄 Previous Year • {subject}")
-        any_sent = True
     else:
         send_message(chat_id, "❌ Previous year file not found!")
 
     if os.path.exists(guess_path):
         send_document(chat_id, guess_path, f"📝 Guess Paper • {subject}")
-        any_sent = True
     else:
         send_message(chat_id, "❌ Guess paper not found!")
 
-    # Optionally still offer navigation back to subjects
+    # Navigation buttons after sending files
     keyboard = [
         [{"text": "⬅️ Back to Subjects", "callback_data": "BACK_SUBJECTS"}],
+        [{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}],
     ]
     send_message(chat_id, "Choose next action:", {"inline_keyboard": keyboard})
 
-    # If you prefer to keep the old buttons as well, uncomment below:
-    # keyboard = [
-    #     [{"text": "📄 Previous Year", "callback_data": f"PY::{user_id}"}],
-    #     [{"text": "📝 Guess Paper", "callback_data": f"GP::{user_id}"}],
-    #     [{"text": "⬅️ Back to Subjects", "callback_data": f"BACK_SUBJECTS"}],
-    # ]
-    # send_message(chat_id, f"Choose file for: {subject}", {"inline_keyboard": keyboard})
-
 def handle_back_to_subjects(chat_id, message_id, user_id):
-    """Show subject list again"""
+    """Show subject list again for the saved semester"""
     info = user_data.get(user_id, {})
     semester = info.get("semester")
     if not semester:
@@ -256,9 +225,18 @@ def handle_back_to_subjects(chat_id, message_id, user_id):
         return
 
     subjects = semesters[semester]
-    keyboard = [[{"text": subj, "callback_data": subj}] for subj in subjects]
+    keyboard = [[{"text": subj, "callback_data": subj}]] for subj in subjects
+    # Also include back to semester here
+    keyboard.append([{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}])
     reply_markup = {"inline_keyboard": keyboard}
     send_message(chat_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
+
+def handle_back_to_semesters(chat_id):
+    """Show semester list again"""
+    keyboard = [[{"text": sem, "callback_data": sem}]] for sem in semesters.keys()
+    keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
+    reply_markup = {"inline_keyboard": keyboard}
+    send_message(chat_id, "📚 Select Semester:", reply_markup)
 
 # -------------------------
 # Flask routes
@@ -284,7 +262,7 @@ def webhook():
             message = data["message"]
             chat_id = message["chat"]["id"]
 
-            if "text" in message and message["text"].startswith("/start"):
+            if "text" in message and str(message["text"]).startswith("/start"):
                 handle_start(chat_id)
 
         # Handle callback query
@@ -305,6 +283,9 @@ def webhook():
 
             elif callback_data == "BACK_SUBJECTS":
                 handle_back_to_subjects(chat_id, message_id, user_id)
+
+            elif callback_data == "BACK_SEMESTERS":
+                handle_back_to_semesters(chat_id)
 
             elif callback_data.startswith("PY::"):
                 send_previous_year(chat_id, user_id)
