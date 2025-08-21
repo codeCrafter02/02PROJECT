@@ -134,7 +134,7 @@ def answer_callback_query(callback_query_id):
 # -------------------------
 def handle_start(chat_id):
     """Handle /start command -> show semester list"""
-    keyboard = [[{"text": sem, "callback_data": sem}]] for sem in semesters.keys()
+    keyboard = [[{"text": sem, "callback_data": sem}] for sem in semesters.keys()]
     # feedback link stays at bottom
     keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
     reply_markup = {"inline_keyboard": keyboard}
@@ -144,7 +144,7 @@ def handle_semester_selection(chat_id, message_id, user_id, semester):
     """Handle semester selection -> save and show subjects"""
     user_data[user_id] = {"semester": semester}
     subjects = semesters[semester]
-    keyboard = [[{"text": subject, "callback_data": subject}]] for subject in subjects
+    keyboard = [[{"text": subject, "callback_data": subject}] for subject in subjects]
     # Also give a way back to semester menu from subjects list
     keyboard.append([{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}])
     reply_markup = {"inline_keyboard": keyboard}
@@ -225,7 +225,7 @@ def handle_back_to_subjects(chat_id, message_id, user_id):
         return
 
     subjects = semesters[semester]
-    keyboard = [[{"text": subj, "callback_data": subj}]] for subj in subjects
+    keyboard = [[{"text": subj, "callback_data": subj}] for subj in subjects]
     # Also include back to semester here
     keyboard.append([{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}])
     reply_markup = {"inline_keyboard": keyboard}
@@ -233,7 +233,7 @@ def handle_back_to_subjects(chat_id, message_id, user_id):
 
 def handle_back_to_semesters(chat_id):
     """Show semester list again"""
-    keyboard = [[{"text": sem, "callback_data": sem}]] for sem in semesters.keys()
+    keyboard = [[{"text": sem, "callback_data": sem}] for sem in semesters.keys()]
     keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
     reply_markup = {"inline_keyboard": keyboard}
     send_message(chat_id, "📚 Select Semester:", reply_markup)
