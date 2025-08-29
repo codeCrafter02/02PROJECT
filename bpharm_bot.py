@@ -180,7 +180,7 @@ def send_guess_paper(chat_id, user_id):
     else:
         send_message(chat_id, "❌ Guess paper not found!")
 
-def handle_subject_selection(chat_id, user_id, subject):
+def handle_subject_selection(chat_id, message_id, user_id, subject):
     """After subject selection, immediately send Previous Year + Guess Paper PDFs and show nav buttons"""
     user_info = user_data.get(user_id, {})
     semester = user_info.get("semester")
@@ -191,8 +191,8 @@ def handle_subject_selection(chat_id, user_id, subject):
     # Save chosen subject
     user_data.setdefault(user_id, {})["subject"] = subject
 
-    # Notify and send both files
-    send_message(chat_id, f"📂 Loading files for: {subject}")
+    # Edit the current message to show selected subject
+    edit_message(chat_id, message_id, f"📂 Selected: {subject}\n\nSending files...", None)
 
     base = make_base_filename(subject)
     folder = semester.replace(" ", "_")
@@ -214,7 +214,8 @@ def handle_subject_selection(chat_id, user_id, subject):
         [{"text": "⬅️ Back to Subjects", "callback_data": "BACK_SUBJECTS"}],
         [{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}],
     ]
-    send_message(chat_id, "Choose next action:", {"inline_keyboard": keyboard})
+    # Edit the message again to show navigation options
+    edit_message(chat_id, message_id, f"📂 Files sent for: {subject}\n\nChoose next action:", {"inline_keyboard": keyboard})
 
 def handle_back_to_subjects(chat_id, message_id, user_id):
     """Show subject list again for the saved semester"""
@@ -229,14 +230,14 @@ def handle_back_to_subjects(chat_id, message_id, user_id):
     # Also include back to semester here
     keyboard.append([{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}])
     reply_markup = {"inline_keyboard": keyboard}
-    send_message(chat_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
+    edit_message(chat_id, message_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
 
-def handle_back_to_semesters(chat_id):
+def handle_back_to_semesters(chat_id, message_id):
     """Show semester list again"""
     keyboard = [[{"text": sem, "callback_data": sem}] for sem in semesters.keys()]
     keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
     reply_markup = {"inline_keyboard": keyboard}
-    send_message(chat_id, "📚 Select Semester:", reply_markup)
+    edit_message(chat_id, message_id, "📚 Select Semester:", reply_markup)
 
 # -------------------------
 # Flask routes
@@ -285,7 +286,7 @@ def webhook():
                 handle_back_to_subjects(chat_id, message_id, user_id)
 
             elif callback_data == "BACK_SEMESTERS":
-                handle_back_to_semesters(chat_id)
+                handle_back_to_semesters(chat_id, message_id)
 
             elif callback_data.startswith("PY::"):
                 send_previous_year(chat_id, user_id)
@@ -295,7 +296,7 @@ def webhook():
 
             else:
                 # Treat as subject selection
-                handle_subject_selection(chat_id, user_id, callback_data)
+                handle_subject_selection(chat_id, message_id, user_id, callback_data)
 
         return "ok", 200
 
