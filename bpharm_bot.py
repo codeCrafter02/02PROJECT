@@ -149,12 +149,19 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subject = data.split("_", 1)[1]
         base = subject.replace(" ", "_")
         semester_folder = None
+        current_semester = None
         
-        # Find folder
+        # Find folder and semester
         for sem, subs in semesters.items():
             if subject in subs:
                 semester_folder = sem.replace(" ", "_")
+                current_semester = sem
                 break
+
+        # Check if user has paid for this semester
+        if user_id not in user_data or current_semester not in user_data[user_id].get("paid_semesters", []):
+            await query.message.reply_text("⚠️ Please purchase this semester first to access subjects!")
+            return
 
         if semester_folder:
             file_path = os.path.join(PAPER_FOLDER, semester_folder, f"{base}.pdf")
