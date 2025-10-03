@@ -1,16 +1,35 @@
 import os
-import requests
 import json
+import requests
 from flask import Flask, request
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
+# ----------------- CONFIG -----------------
+TOKEN = os.getenv("BOT_TOKEN")  # Render me set karo
+WEBHOOK_URL = "https://zero2project-wutc.onrender.com/webhook"  # apna Render URL
 PAPER_FOLDER = "bpharm_bot_18"
+UPI_ID = "yourupiid@upi"  # apna UPI ID yaha daalna
 
 app = Flask(__name__)
 
-# Semester-subject mapping (same as before)
+# ----------------- USER DATA -----------------
+USER_DATA_FILE = "user_data.json"
+
+def load_user_data():
+    try:
+        with open(USER_DATA_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_user_data():
+    with open(USER_DATA_FILE, "w") as f:
+        json.dump(user_data, f)
+
+user_data = load_user_data()
+
+# ----------------- SEMESTERS & SUBJECTS -----------------
 semesters = {
     "1st Semester": [
         "Human Anatomy and Physiology I",
@@ -67,331 +86,121 @@ semesters = {
     ],
 }
 
-# Store user data in memory with message IDs
-user_data = {}
+# ----------------- START COMMAND -----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton(sem, callback_data=f"sem_{sem}")] for sem in semesters.keys()]
+    await update.message.reply_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# -------------------------
-# Utilities
-# -------------------------
-def make_base_filename(subject: str) -> str:
-    return subject.replace(" ", "_").replace("-", "").replace("/", "")
+# ----------------- CALLBACK HANDLER -----------------
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = str(query.from_user.id)
+    data = query.data
 
-def send_message(chat_id, text, reply_markup=None):
-    """Send message using requests"""
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {"chat_id": chat_id, "text": text}
-    if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
-    try:
-        response = requests.post(url, json=data, timeout=10)
-        return response.json()
-    except Exception as e:
-        print(f"Error sending message: {e}")
-        return None
+    # ----- Semester Selection -----
+    if data.startswith("sem_"):
+        semester = data.split("_", 1)[1]
 
-def edit_message(chat_id, message_id, text, reply_markup=None):
-    """Edit message using requests with better error handling"""
-    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-    data = {"chat_id": chat_id, "message_id": message_id, "text": text}
-    if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
-    try:
-        response = requests.post(url, json=data, timeout=10)
-        response_data = response.json()
-        
-        # Check for specific Telegram errors
-        if not response_data.get('ok'):
-            error_code = response_data.get('error_code')
-            error_description = response_data.get('description', '')
-            
-            # If message is not modified (same content), it's still OK for our purposes
-            if error_code == 400 and "message is not modified" in error_description:
-                return {"ok": True}
-            
-            print(f"Edit message failed: {response_data}")
-            return None
-        
-        return response_data
-    except Exception as e:
-        print(f"Error editing message: {e}")
-        return None
+        # Check payment
+        if user_id in user_data and semester in user_data[user_id].get("paid_semesters", []):
+            await show_subjects(query, semester)
+        else:
+            keyboard = [
+                [InlineKeyboardButton("✅ I have Paid", callback_data=f"paid_{semester}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
+            ]
+            await query.edit_message_text(
+                f"💰 To unlock **{semester}**, please pay ₹10 to this UPI ID:\n\n`{UPI_ID}`\n\n"
+                "After payment, click ✅ *I have Paid*.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
 
-def send_document(chat_id, file_path, caption=None):
-    """Send document using requests"""
-    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
-    data = {"chat_id": chat_id}
-    if caption:
-        data["caption"] = caption
-    try:
-        with open(file_path, "rb") as doc:
-            files = {"document": doc}
-            response = requests.post(url, data=data, files=files, timeout=60)
-        return response.json()
-    except Exception as e:
-        print(f"Error sending document: {e}")
-        return None
+    # ----- Payment Confirmation -----
+    elif data.startswith("paid_"):
+        semester = data.split("_", 1)[1]
 
-def answer_callback_query(callback_query_id):
-    """Answer callback query"""
-    url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
-    data = {"callback_query_id": callback_query_id}
-    try:
-        response = requests.post(url, json=data, timeout=5)
-        return response.json()
-    except Exception as e:
-        print(f"Error answering callback: {e}")
-        return None
+        if user_id not in user_data:
+            user_data[user_id] = {"paid_semesters": []}
 
-# -------------------------
-# Handlers
-# -------------------------
-def handle_start(chat_id):
-    """Handle /start command -> show semester list"""
-    keyboard = [[{"text": sem, "callback_data": sem}] for sem in semesters.keys()]
-    keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
-    reply_markup = {"inline_keyboard": keyboard}
-    
-    result = send_message(chat_id, "📚 Select Semester:", reply_markup)
-    return result
+        if semester not in user_data[user_id]["paid_semesters"]:
+            user_data[user_id]["paid_semesters"].append(semester)
+            save_user_data()
 
-def handle_semester_selection(chat_id, message_id, user_id, semester):
-    """Handle semester selection -> save and show subjects"""
-    # Store both semester and current navigation message ID
-    user_data[user_id] = {
-        "semester": semester, 
-        "nav_message_id": message_id
-    }
-    
-    subjects = semesters[semester]
-    keyboard = [[{"text": subject, "callback_data": subject}] for subject in subjects]
-    keyboard.append([{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}])
-    reply_markup = {"inline_keyboard": keyboard}
-    
-    # Try to edit the message, if it fails, send a new one
-    result = edit_message(chat_id, message_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
-    
-    if not result or not result.get('ok'):
-        # If edit fails, send new message and update the message ID
-        new_result = send_message(chat_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
-        if new_result and new_result.get('ok'):
-            user_data[user_id]["nav_message_id"] = new_result['result']['message_id']
+        await query.edit_message_text("✅ Payment verified! Access unlocked.")
+        await show_subjects(query, semester)
 
-def handle_subject_selection(chat_id, message_id, user_id, subject):
-    """After subject selection, send files and create NEW navigation message"""
-    user_info = user_data.get(user_id, {})
-    semester = user_info.get("semester")
-    if not semester:
-        send_message(chat_id, "❗Please select a semester first using /start")
-        return
+    # ----- Cancel -----
+    elif data == "cancel":
+        await query.edit_message_text("❌ Payment cancelled.")
 
-    # Save chosen subject
-    user_data.setdefault(user_id, {})["subject"] = subject
+    # ----- Subject Selection -----
+    elif data.startswith("sub_"):
+        subject = data.split("_", 1)[1]
+        base = subject.replace(" ", "_")
+        semester_folder = None
+        # Find folder
+        for sem, subs in semesters.items():
+            if subject in subs:
+                semester_folder = sem.replace(" ", "_")
+                break
 
-    # Edit current message to show selection
-    edit_message(chat_id, message_id, f"✅ Selected: {subject}", None)
+        if semester_folder:
+            file_path = os.path.join(PAPER_FOLDER, semester_folder, f"{base}.pdf")
+            guess_path = os.path.join(PAPER_FOLDER, semester_folder, f"{base}_Guess.pdf")
 
-    # Send loading message
-    loading_msg = send_message(chat_id, f"📂 Loading files for: {subject}...")
-
-    base = make_base_filename(subject)
-    folder = semester.replace(" ", "_")
-    prev_path = os.path.join(PAPER_FOLDER, folder, f"{base}.pdf")
-    guess_path = os.path.join(PAPER_FOLDER, folder, f"{base}_Guess.pdf")
-
-    # Send files
-    files_sent = 0
-    if os.path.exists(prev_path):
-        send_document(chat_id, prev_path, f"📄 Previous Year • {subject}")
-        files_sent += 1
-    else:
-        send_message(chat_id, "❌ Previous year file not found!")
-
-    if os.path.exists(guess_path):
-        send_document(chat_id, guess_path, f"📝 Guess Paper • {subject}")
-        files_sent += 1
-    else:
-        send_message(chat_id, "❌ Guess paper not found!")
-
-    # Create NEW navigation message (not editing the old one)
-    keyboard = [
-        [{"text": "⬅️ Back to Subjects", "callback_data": "BACK_SUBJECTS"}],
-        [{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}],
-    ]
-    
-    nav_text = f"📂 Files sent for: {subject}\n\nChoose next action:"
-    nav_result = send_message(chat_id, nav_text, {"inline_keyboard": keyboard})
-    
-    # Update navigation message ID
-    if nav_result and nav_result.get('ok'):
-        user_data[user_id]["nav_message_id"] = nav_result['result']['message_id']
-
-    # Delete loading message if it was sent successfully
-    if loading_msg and loading_msg.get('ok'):
-        try:
-            delete_url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
-            requests.post(delete_url, json={
-                "chat_id": chat_id, 
-                "message_id": loading_msg['result']['message_id']
-            }, timeout=5)
-        except:
-            pass
-
-def handle_back_to_subjects(chat_id, message_id, user_id):
-    """Show subject list again for the saved semester"""
-    info = user_data.get(user_id, {})
-    semester = info.get("semester")
-    if not semester:
-        send_message(chat_id, "❗Please select a semester first using /start")
-        return
-
-    subjects = semesters[semester]
-    keyboard = [[{"text": subj, "callback_data": subj}] for subj in subjects]
-    keyboard.append([{"text": "🔙 Back to Semester", "callback_data": "BACK_SEMESTERS"}])
-    reply_markup = {"inline_keyboard": keyboard}
-    
-    # Use the stored navigation message ID
-    nav_message_id = info.get("nav_message_id", message_id)
-    
-    result = edit_message(chat_id, nav_message_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
-    
-    if not result or not result.get('ok'):
-        # If edit fails, send new message
-        new_result = send_message(chat_id, f"📘 {semester} Subjects:\nSelect one:", reply_markup)
-        if new_result and new_result.get('ok'):
-            user_data[user_id]["nav_message_id"] = new_result['result']['message_id']
-
-def handle_back_to_semesters(chat_id, message_id, user_id):
-    """Show semester list again"""
-    keyboard = [[{"text": sem, "callback_data": sem}] for sem in semesters.keys()]
-    keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
-    reply_markup = {"inline_keyboard": keyboard}
-    
-    # Use the stored navigation message ID if available
-    info = user_data.get(user_id, {})
-    nav_message_id = info.get("nav_message_id", message_id)
-    
-    result = edit_message(chat_id, nav_message_id, "📚 Select Semester:", reply_markup)
-    
-    if not result or not result.get('ok'):
-        # If edit fails, send new message
-        new_result = send_message(chat_id, "📚 Select Semester:", reply_markup)
-        if new_result and new_result.get('ok') and user_id in user_data:
-            user_data[user_id]["nav_message_id"] = new_result['result']['message_id']
-
-# Rest of the utility functions remain the same...
-def send_previous_year(chat_id, user_id):
-    info = user_data.get(user_id, {})
-    semester = info.get("semester")
-    subject = info.get("subject")
-    if not semester or not subject:
-        send_message(chat_id, "❗Please select a semester and subject first using /start")
-        return
-    base = make_base_filename(subject)
-    folder = semester.replace(" ", "_")
-    filepath = os.path.join(PAPER_FOLDER, folder, f"{base}.pdf")
-    if os.path.exists(filepath):
-        send_document(chat_id, filepath, f"📄 Previous Year • {subject}")
-    else:
-        send_message(chat_id, "❌ Previous year file not found!")
-
-def send_guess_paper(chat_id, user_id):
-    info = user_data.get(user_id, {})
-    semester = info.get("semester")
-    subject = info.get("subject")
-    if not semester or not subject:
-        send_message(chat_id, "❗Please select a semester and subject first using /start")
-        return
-    base = make_base_filename(subject)
-    folder = semester.replace(" ", "_")
-    guess_path = os.path.join(PAPER_FOLDER, folder, f"{base}_Guess.pdf")
-    if os.path.exists(guess_path):
-        send_document(chat_id, guess_path, f"📝 Guess Paper • {subject}")
-    else:
-        send_message(chat_id, "❌ Guess paper not found!")
-
-# -------------------------
-# Flask routes
-# -------------------------
-@app.route("/")
-def home():
-    if not TOKEN:
-        return "❌ BOT_TOKEN environment variable not set!"
-    return "✅ Bot is Live on Render!"
-
-@app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
-    try:
-        if not TOKEN:
-            return "Bot not initialized - check BOT_TOKEN", 500
-
-        data = request.get_json()
-        if not data:
-            return "Bad Request", 400
-
-        # Handle message
-        if "message" in data:
-            message = data["message"]
-            chat_id = message["chat"]["id"]
-
-            if "text" in message and str(message["text"]).startswith("/start"):
-                handle_start(chat_id)
-
-        # Handle callback query
-        elif "callback_query" in data:
-            callback_query = data["callback_query"]
-            callback_query_id = callback_query["id"]
-            chat_id = callback_query["message"]["chat"]["id"]
-            message_id = callback_query["message"]["message_id"]
-            user_id = callback_query["from"]["id"]
-            callback_data = callback_query["data"]
-
-            # Answer callback to remove 'loading' on Telegram UI
-            answer_callback_query(callback_query_id)
-
-            # Routing
-            if callback_data in semesters:
-                handle_semester_selection(chat_id, message_id, user_id, callback_data)
-
-            elif callback_data == "BACK_SUBJECTS":
-                handle_back_to_subjects(chat_id, message_id, user_id)
-
-            elif callback_data == "BACK_SEMESTERS":
-                handle_back_to_semesters(chat_id, message_id, user_id)
-
-            elif callback_data.startswith("PY::"):
-                send_previous_year(chat_id, user_id)
-
-            elif callback_data.startswith("GP::"):
-                send_guess_paper(chat_id, user_id)
-
+            if os.path.exists(file_path):
+                await query.message.reply_document(open(file_path, "rb"), caption=f"📄 {subject}")
             else:
-                # Check if it's a valid subject
-                all_subjects = []
-                for sem_subjects in semesters.values():
-                    all_subjects.extend(sem_subjects)
-                
-                if callback_data in all_subjects:
-                    handle_subject_selection(chat_id, message_id, user_id, callback_data)
-                else:
-                    send_message(chat_id, "❗Unknown command. Please use /start to begin.")
+                await query.message.reply_text("⚠️ Previous year file not found!")
 
-        return "ok", 200
+            if os.path.exists(guess_path):
+                await query.message.reply_document(open(guess_path, "rb"), caption=f"📝 Guess Paper {subject}")
+            else:
+                await query.message.reply_text("⚠️ Guess paper not found!")
 
-    except Exception as e:
-        print(f"Error processing webhook: {e}")
-        return "Internal Server Error", 500
+        else:
+            await query.message.reply_text("⚠️ Subject folder not found!")
 
-# -------------------------
-# Entrypoint
-# -------------------------
+# ----------------- SHOW SUBJECTS FUNCTION -----------------
+async def show_subjects(query, semester):
+    subs = semesters.get(semester)
+    if not subs:
+        await query.edit_message_text("⚠️ No subjects found.")
+        return
+
+    keyboard = [[InlineKeyboardButton(sub, callback_data=f"sub_{sub}")] for sub in subs]
+    keyboard.append([InlineKeyboardButton("🔙 Back to Semesters", callback_data="back_semesters")])
+    await query.edit_message_text(f"📖 Subjects in {semester}:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ----------------- BACK TO SEMESTERS -----------------
+async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await start(query, context)
+
+# ----------------- FLASK ROUTES -----------------
+@app.route("/")
+def index():
+    return "Bot is running with payment system!"
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), context.bot)
+    context.application.process_update(update)
+    return "ok"
+
+# ----------------- MAIN -----------------
 if __name__ == "__main__":
-    if TOKEN:
-        try:
-            webhook_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-            response = requests.post(webhook_url, json={"url": WEBHOOK_URL}, timeout=10)
-            print(f"Webhook setup: {response.json()}")
-        except Exception as e:
-            print(f"Error setting webhook: {e}")
+    app_telegram = ApplicationBuilder().token(TOKEN).build()
+    app_telegram.add_handler(CommandHandler("start", start))
+    app_telegram.add_handler(CallbackQueryHandler(button, pattern=".*"))
 
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    context = type("obj", (object,), {"bot": app_telegram.bot, "application": app_telegram})()
+
+    # Set webhook
+    requests.post(f"https://api.telegram.org/bot{TOKEN}/setWebhook", {"url": WEBHOOK_URL})
+
+    # Run Flask
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
