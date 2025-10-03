@@ -1,15 +1,15 @@
 import os
 import json
-import requests
+import asyncio
 from flask import Flask, request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # ----------------- CONFIG -----------------
-TOKEN = os.getenv("BOT_TOKEN")  # Render me set karo
-WEBHOOK_URL = "https://zero2project-wutc.onrender.com/webhook"  # apna Render URL
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = "https://zero2project-wutc.onrender.com/webhook"
 PAPER_FOLDER = "bpharm_bot_18"
-UPI_ID = "9452200292@naviaxis"  # apna UPI ID yaha daalna
+UPI_ID = "yourupiid@upi"
 
 app = Flask(__name__)
 
@@ -89,7 +89,11 @@ semesters = {
 # ----------------- START COMMAND -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(sem, callback_data=f"sem_{sem}")] for sem in semesters.keys()]
-    await update.message.reply_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    if update.message:
+        await update.message.reply_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif update.callback_query:
+        await update.callback_query.edit_message_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ----------------- CALLBACK HANDLER -----------------
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,11 +139,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "cancel":
         await query.edit_message_text("❌ Payment cancelled.")
 
+    # ----- Back to Semesters -----
+    elif data == "back_semesters":
+        keyboard = [[InlineKeyboardButton(sem, callback_data=f"sem_{sem}")] for sem in semesters.keys()]
+        await query.edit_message_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
+
     # ----- Subject Selection -----
     elif data.startswith("sub_"):
         subject = data.split("_", 1)[1]
         base = subject.replace(" ", "_")
         semester_folder = None
+        
         # Find folder
         for sem, subs in semesters.items():
             if subject in subs:
@@ -151,15 +161,16 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             guess_path = os.path.join(PAPER_FOLDER, semester_folder, f"{base}_Guess.pdf")
 
             if os.path.exists(file_path):
-                await query.message.reply_document(open(file_path, "rb"), caption=f"📄 {subject}")
+                with open(file_path, "rb") as f:
+                    await query.message.reply_document(f, caption=f"📄 {subject}")
             else:
                 await query.message.reply_text("⚠️ Previous year file not found!")
 
             if os.path.exists(guess_path):
-                await query.message.reply_document(open(guess_path, "rb"), caption=f"📝 Guess Paper {subject}")
+                with open(guess_path, "rb") as g:
+                    await query.message.reply_document(g, caption=f"📝 Guess Paper {subject}")
             else:
                 await query.message.reply_text("⚠️ Guess paper not found!")
-
         else:
             await query.message.reply_text("⚠️ Subject folder not found!")
 
@@ -174,11 +185,19 @@ async def show_subjects(query, semester):
     keyboard.append([InlineKeyboardButton("🔙 Back to Semesters", callback_data="back_semesters")])
     await query.edit_message_text(f"📖 Subjects in {semester}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ----------------- BACK TO SEMESTERS -----------------
-async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await start(query, context)
+# ----------------- TELEGRAM APPLICATION -----------------
+application = None
+
+async def setup_application():
+    global application
+    application = Application.builder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button))
+    
+    await application.initialize()
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    await application.start()
 
 # ----------------- FLASK ROUTES -----------------
 @app.route("/")
@@ -187,20 +206,19 @@ def index():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), context.bot)
-    context.application.process_update(update)
-    return "ok"
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        asyncio.run(application.process_update(update))
+        return "ok"
+    except Exception as e:
+        print(f"Error processing update: {e}")
+        return "error", 500
 
 # ----------------- MAIN -----------------
 if __name__ == "__main__":
-    app_telegram = ApplicationBuilder().token(TOKEN).build()
-    app_telegram.add_handler(CommandHandler("start", start))
-    app_telegram.add_handler(CallbackQueryHandler(button, pattern=".*"))
-
-    context = type("obj", (object,), {"bot": app_telegram.bot, "application": app_telegram})()
-
-    # Set webhook
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/setWebhook", {"url": WEBHOOK_URL})
-
+    # Setup bot
+    asyncio.run(setup_application())
+    
     # Run Flask
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
