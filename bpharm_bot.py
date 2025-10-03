@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 TOKEN = os.getenv("BOT_TOKEN")  # Render me set karo
 WEBHOOK_URL = "https://zero2project-wutc.onrender.com/webhook"  # apna Render URL
 PAPER_FOLDER = "bpharm_bot_18"
-UPI_ID = "yourupiid@upi"  # apna UPI ID yaha daalna
+UPI_ID = "9452200292@naviaxis"  # apna UPI ID yaha daalna
 
 app = Flask(__name__)
 
