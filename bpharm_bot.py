@@ -1,36 +1,22 @@
 import os
+import requests
 import json
-import asyncio
+import hmac
+import hashlib
 from flask import Flask, request
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ----------------- CONFIG -----------------
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = "https://zero2project-wutc.onrender.com/webhook"
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+WEBHOOK_PATH = "/webhook"
+PAYMENT_WEBHOOK_PATH = "/payment_webhook"
+WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
+PAYMENT_WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + PAYMENT_WEBHOOK_PATH
 PAPER_FOLDER = "bpharm_bot_18"
-UPI_ID = "9452200292@naviaxis"
-ADMIN_IDS = [7287370169]  # Apni Telegram user ID yaha daalo (multiple admins add kar sakte ho)
 
 app = Flask(__name__)
 
-# ----------------- USER DATA -----------------
-USER_DATA_FILE = "user_data.json"
-
-def load_user_data():
-    try:
-        with open(USER_DATA_FILE, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_user_data():
-    with open(USER_DATA_FILE, "w") as f:
-        json.dump(user_data, f)
-
-user_data = load_user_data()
-
-# ----------------- SEMESTERS & SUBJECTS -----------------
+# Semester-subject mapping
 semesters = {
     "1st Semester": [
         "Human Anatomy and Physiology I",
@@ -87,246 +73,439 @@ semesters = {
     ],
 }
 
-# ----------------- START COMMAND -----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(sem, callback_data=f"sem_{sem}")] for sem in semesters.keys()]
-    
-    if update.message:
-        await update.message.reply_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif update.callback_query:
-        await update.callback_query.edit_message_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
+# Store user data in memory (user_id -> {"semester": ..., "paid_semesters": [...], ...})
+user_data = {}
 
-# ----------------- ADMIN COMMAND - APPROVE PAYMENT -----------------
-async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_id = update.message.from_user.id
+# Store payment data temporarily (order_id -> {"user_id": ..., "semester": ...})
+pending_payments = {}
+
+# -------------------------
+# Utilities
+# -------------------------
+def make_base_filename(subject: str) -> str:
+    return subject.replace(" ", "_").replace("-", "").replace("/", "")
+
+def send_message(chat_id, text, reply_markup=None):
+    """Send message using requests"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Error sending message: {e}")
+        return None
+
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    """Edit message using requests with better error handling"""
+    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
+    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        response_data = response.json()
+        
+        if not response_data.get('ok'):
+            error_code = response_data.get('error_code')
+            error_description = response_data.get('description', '')
+            
+            if error_code == 400 and "message is not modified" in error_description:
+                return {"ok": True}
+            
+            print(f"Edit message failed: {response_data}")
+            return None
+        
+        return response_data
+    except Exception as e:
+        print(f"Error editing message: {e}")
+        return None
+
+def send_document(chat_id, file_path, caption=None):
+    """Send document using requests"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption
+    try:
+        with open(file_path, "rb") as doc:
+            files = {"document": doc}
+            response = requests.post(url, data=data, files=files, timeout=60)
+        return response.json()
+    except Exception as e:
+        print(f"Error sending document: {e}")
+        return None
+
+def answer_callback_query(callback_query_id, text=None):
+    """Answer callback query"""
+    url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    data = {"callback_query_id": callback_query_id}
+    if text:
+        data["text"] = text
+        data["show_alert"] = True
+    try:
+        response = requests.post(url, json=data, timeout=5)
+        return response.json()
+    except Exception as e:
+        print(f"Error answering callback: {e}")
+        return None
+
+def create_razorpay_order(amount, semester, user_id):
+    """Create Razorpay order"""
+    url = "https://api.razorpay.com/v1/orders"
+    auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
     
-    if admin_id not in ADMIN_IDS:
-        await update.message.reply_text("⚠️ You are not authorized to use this command.")
+    payload = {
+        "amount": amount * 100,  # amount in paise
+        "currency": "INR",
+        "notes": {
+            "semester": semester,
+            "user_id": str(user_id)
+        }
+    }
+    
+    try:
+        response = requests.post(url, json=payload, auth=auth, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Error creating order: {e}")
+        return None
+
+def verify_razorpay_signature(payload, signature, secret):
+    """Verify Razorpay webhook signature"""
+    expected_signature = hmac.new(
+        secret.encode('utf-8'),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected_signature, signature)
+
+def is_semester_paid(user_id, semester):
+    """Check if user has paid for a semester"""
+    user_info = user_data.get(user_id, {})
+    paid_semesters = user_info.get("paid_semesters", [])
+    return semester in paid_semesters
+
+def mark_semester_paid(user_id, semester):
+    """Mark semester as paid for user"""
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    if "paid_semesters" not in user_data[user_id]:
+        user_data[user_id]["paid_semesters"] = []
+    if semester not in user_data[user_id]["paid_semesters"]:
+        user_data[user_id]["paid_semesters"].append(semester)
+
+# -------------------------
+# Handlers
+# -------------------------
+def handle_start(chat_id):
+    """Handle /start command -> show semester list"""
+    keyboard = [[{"text": sem, "callback_data": sem}] for sem in semesters.keys()]
+    keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
+    reply_markup = {"inline_keyboard": keyboard}
+    
+    welcome_text = (
+        "🎓 *Welcome to B.Pharm Study Material Bot!*\n\n"
+        "📚 Select your semester to get started:\n\n"
+        "💡 Each semester contains:\n"
+        "   • Previous Year Papers\n"
+        "   • Guess Papers\n"
+        "   • All Subjects\n\n"
+        "💰 One-time payment: ₹10/semester"
+    )
+    
+    result = send_message(chat_id, welcome_text, reply_markup)
+    return result
+
+def handle_semester_selection(chat_id, message_id, user_id, semester):
+    """Handle semester selection -> check payment and show subjects or payment button"""
+    user_data[user_id] = {
+        "semester": semester, 
+        "nav_message_id": message_id
+    }
+    
+    # Check if user has paid for this semester
+    if is_semester_paid(user_id, semester):
+        show_subjects(chat_id, message_id, user_id, semester)
+    else:
+        show_payment_screen(chat_id, message_id, user_id, semester)
+
+def show_payment_screen(chat_id, message_id, user_id, semester):
+    """Show payment screen with Razorpay payment button"""
+    # Create Razorpay order
+    order = create_razorpay_order(10, semester, user_id)
+    
+    if not order or "id" not in order:
+        send_message(chat_id, "❌ Error creating payment. Please try again.")
         return
     
-    # Command format: /approve user_id semester_name
-    # Example: /approve 123456789 1st Semester
-    try:
-        args = context.args
-        if len(args) < 2:
-            await update.message.reply_text(
-                "Usage: /approve <user_id> <semester_name>\n"
-                "Example: /approve 123456789 1st Semester"
-            )
-            return
-        
-        target_user_id = args[0]
-        semester = " ".join(args[1:])
-        
-        if semester not in semesters:
-            await update.message.reply_text(f"⚠️ Invalid semester: {semester}")
-            return
-        
-        if target_user_id not in user_data:
-            user_data[target_user_id] = {"paid_semesters": [], "pending": []}
-        
-        if semester not in user_data[target_user_id]["paid_semesters"]:
-            user_data[target_user_id]["paid_semesters"].append(semester)
-        
-        # Remove from pending if exists
-        if "pending" in user_data[target_user_id] and semester in user_data[target_user_id]["pending"]:
-            user_data[target_user_id]["pending"].remove(semester)
-        
-        save_user_data()
-        
-        await update.message.reply_text(f"✅ Approved {semester} for user {target_user_id}")
-        
-        # Notify user
+    order_id = order["id"]
+    pending_payments[order_id] = {
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "semester": semester,
+        "message_id": message_id
+    }
+    
+    # Create payment link
+    payment_link = f"https://api.razorpay.com/v1/checkout/embedded?key_id={RAZORPAY_KEY_ID}&order_id={order_id}"
+    
+    keyboard = [
+        [{"text": "💳 Pay ₹10 to Unlock", "url": payment_link}],
+        [{"text": "🔙 Back to Semesters", "callback_data": "BACK_SEMESTERS"}]
+    ]
+    reply_markup = {"inline_keyboard": keyboard}
+    
+    text = (
+        f"🔒 *{semester}*\n\n"
+        f"💰 Price: ₹10 (One-time payment)\n"
+        f"✅ Lifetime access to all subjects\n"
+        f"📚 Previous year papers + Guess papers\n\n"
+        f"Click the button below to pay:"
+    )
+    
+    result = edit_message(chat_id, message_id, text, reply_markup)
+    
+    if not result or not result.get('ok'):
+        new_result = send_message(chat_id, text, reply_markup)
+        if new_result and new_result.get('ok'):
+            user_data[user_id]["nav_message_id"] = new_result['result']['message_id']
+
+def show_subjects(chat_id, message_id, user_id, semester):
+    """Show subjects for unlocked semester"""
+    subjects = semesters[semester]
+    keyboard = [[{"text": subject, "callback_data": subject}] for subject in subjects]
+    keyboard.append([{"text": "🔙 Back to Semesters", "callback_data": "BACK_SEMESTERS"}])
+    reply_markup = {"inline_keyboard": keyboard}
+    
+    text = f"📘 *{semester}*\n✅ Unlocked\n\nSelect a subject:"
+    
+    result = edit_message(chat_id, message_id, text, reply_markup)
+    
+    if not result or not result.get('ok'):
+        new_result = send_message(chat_id, text, reply_markup)
+        if new_result and new_result.get('ok'):
+            user_data[user_id]["nav_message_id"] = new_result['result']['message_id']
+
+def handle_subject_selection(chat_id, message_id, user_id, subject):
+    """After subject selection, send files and create NEW navigation message"""
+    user_info = user_data.get(user_id, {})
+    semester = user_info.get("semester")
+    if not semester:
+        send_message(chat_id, "❗Please select a semester first using /start")
+        return
+
+    # Check if semester is paid
+    if not is_semester_paid(user_id, semester):
+        answer_callback_query(message_id, "❌ Please pay to unlock this semester first!")
+        return
+
+    user_data.setdefault(user_id, {})["subject"] = subject
+
+    edit_message(chat_id, message_id, f"✅ Selected: *{subject}*", None)
+
+    loading_msg = send_message(chat_id, f"📂 Loading files for: *{subject}*...")
+
+    base = make_base_filename(subject)
+    folder = semester.replace(" ", "_")
+    prev_path = os.path.join(PAPER_FOLDER, folder, f"{base}.pdf")
+    guess_path = os.path.join(PAPER_FOLDER, folder, f"{base}_Guess.pdf")
+
+    files_sent = 0
+    if os.path.exists(prev_path):
+        send_document(chat_id, prev_path, f"📄 Previous Year • {subject}")
+        files_sent += 1
+    else:
+        send_message(chat_id, f"❌ Previous year file not found for {subject}!")
+
+    if os.path.exists(guess_path):
+        send_document(chat_id, guess_path, f"📝 Guess Paper • {subject}")
+        files_sent += 1
+    else:
+        send_message(chat_id, f"❌ Guess paper not found for {subject}!")
+
+    keyboard = [
+        [{"text": "⬅ Back to Subjects", "callback_data": "BACK_SUBJECTS"}],
+        [{"text": "🔙 Back to Semesters", "callback_data": "BACK_SEMESTERS"}],
+    ]
+    
+    nav_text = f"📂 Files sent for: *{subject}*\n\nChoose next action:"
+    nav_result = send_message(chat_id, nav_text, {"inline_keyboard": keyboard})
+    
+    if nav_result and nav_result.get('ok'):
+        user_data[user_id]["nav_message_id"] = nav_result['result']['message_id']
+
+    # Delete loading message
+    if loading_msg and loading_msg.get('ok'):
         try:
-            await context.bot.send_message(
-                chat_id=int(target_user_id),
-                text=f"✅ Your payment for **{semester}** has been verified!\n\nYou can now access all subjects. Use /start to continue.",
-                parse_mode="Markdown"
-            )
+            delete_url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
+            requests.post(delete_url, json={
+                "chat_id": chat_id, 
+                "message_id": loading_msg['result']['message_id']
+            }, timeout=5)
         except:
             pass
-            
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Error: {str(e)}")
 
-# ----------------- ADMIN COMMAND - VIEW PENDING PAYMENTS -----------------
-async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_id = update.message.from_user.id
-    
-    if admin_id not in ADMIN_IDS:
-        await update.message.reply_text("⚠️ You are not authorized to use this command.")
-        return
-    
-    pending_list = []
-    for uid, data in user_data.items():
-        if "pending" in data and data["pending"]:
-            for sem in data["pending"]:
-                pending_list.append(f"User: {uid}\nSemester: {sem}\n")
-    
-    if pending_list:
-        message = "📋 **Pending Payment Verifications:**\n\n" + "\n".join(pending_list)
-        message += "\n\nTo approve: /approve <user_id> <semester_name>"
-    else:
-        message = "✅ No pending payment verifications."
-    
-    await update.message.reply_text(message, parse_mode="Markdown")
-
-# ----------------- CALLBACK HANDLER -----------------
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = str(query.from_user.id)
-    data = query.data
-
-    # ----- Semester Selection -----
-    if data.startswith("sem_"):
-        semester = data.split("_", 1)[1]
-
-        # Check payment
-        if user_id in user_data and semester in user_data[user_id].get("paid_semesters", []):
-            await show_subjects(query, semester)
-        else:
-            keyboard = [
-                [InlineKeyboardButton("✅ I have Paid", callback_data=f"paid_{semester}")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
-            ]
-            await query.edit_message_text(
-                f"💰 To unlock **{semester}**, please pay ₹10 to this UPI ID:\n\n`{UPI_ID}`\n\n"
-                "After payment, click ✅ *I have Paid*.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-
-    # ----- Payment Confirmation -----
-    elif data.startswith("paid_"):
-        semester = data.split("_", 1)[1]
-        
-        # Payment verification pending - ask for screenshot
-        keyboard = [
-            [InlineKeyboardButton("📤 Submit Payment Screenshot", callback_data=f"submit_{semester}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
-        ]
-        await query.edit_message_text(
-            "📸 Please send your payment screenshot to verify.\n\n"
-            "After sending the screenshot, an admin will verify and unlock access within 24 hours.\n\n"
-            f"Or contact admin: @youradminusername",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    # ----- Submit Payment Request -----
-    elif data.startswith("submit_"):
-        semester = data.split("_", 1)[1]
-        
-        # Store pending payment request
-        if user_id not in user_data:
-            user_data[user_id] = {"paid_semesters": [], "pending": []}
-        
-        if "pending" not in user_data[user_id]:
-            user_data[user_id]["pending"] = []
-        
-        if semester not in user_data[user_id]["pending"]:
-            user_data[user_id]["pending"].append(semester)
-            save_user_data()
-        
-        await query.edit_message_text(
-            "✅ Payment request submitted!\n\n"
-            "Please send your payment screenshot now. Admin will verify within 24 hours.\n\n"
-            "You will receive a notification once verified."
-        )
-
-    # ----- Cancel -----
-    elif data == "cancel":
-        await query.edit_message_text("❌ Payment cancelled.")
-
-    # ----- Back to Semesters -----
-    elif data == "back_semesters":
-        keyboard = [[InlineKeyboardButton(sem, callback_data=f"sem_{sem}")] for sem in semesters.keys()]
-        await query.edit_message_text("📚 Choose Semester:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # ----- Subject Selection -----
-    elif data.startswith("sub_"):
-        subject = data.split("_", 1)[1]
-        base = subject.replace(" ", "_")
-        semester_folder = None
-        current_semester = None
-        
-        # Find folder and semester
-        for sem, subs in semesters.items():
-            if subject in subs:
-                semester_folder = sem.replace(" ", "_")
-                current_semester = sem
-                break
-
-        # Check if user has paid for this semester
-        if user_id not in user_data or current_semester not in user_data[user_id].get("paid_semesters", []):
-            await query.message.reply_text("⚠️ Please purchase this semester first to access subjects!")
-            return
-
-        if semester_folder:
-            file_path = os.path.join(PAPER_FOLDER, semester_folder, f"{base}.pdf")
-            guess_path = os.path.join(PAPER_FOLDER, semester_folder, f"{base}_Guess.pdf")
-
-            if os.path.exists(file_path):
-                with open(file_path, "rb") as f:
-                    await query.message.reply_document(f, caption=f"📄 {subject}")
-            else:
-                await query.message.reply_text("⚠️ Previous year file not found!")
-
-            if os.path.exists(guess_path):
-                with open(guess_path, "rb") as g:
-                    await query.message.reply_document(g, caption=f"📝 Guess Paper {subject}")
-            else:
-                await query.message.reply_text("⚠️ Guess paper not found!")
-        else:
-            await query.message.reply_text("⚠️ Subject folder not found!")
-
-# ----------------- SHOW SUBJECTS FUNCTION -----------------
-async def show_subjects(query, semester):
-    subs = semesters.get(semester)
-    if not subs:
-        await query.edit_message_text("⚠️ No subjects found.")
+def handle_back_to_subjects(chat_id, message_id, user_id):
+    """Show subject list again for the saved semester"""
+    info = user_data.get(user_id, {})
+    semester = info.get("semester")
+    if not semester:
+        send_message(chat_id, "❗Please select a semester first using /start")
         return
 
-    keyboard = [[InlineKeyboardButton(sub, callback_data=f"sub_{sub}")] for sub in subs]
-    keyboard.append([InlineKeyboardButton("🔙 Back to Semesters", callback_data="back_semesters")])
-    await query.edit_message_text(f"📖 Subjects in {semester}:", reply_markup=InlineKeyboardMarkup(keyboard))
+    if not is_semester_paid(user_id, semester):
+        show_payment_screen(chat_id, message_id, user_id, semester)
+        return
 
-# ----------------- TELEGRAM APPLICATION -----------------
-application = None
+    show_subjects(chat_id, message_id, user_id, semester)
 
-async def setup_application():
-    global application
-    application = Application.builder().token(TOKEN).build()
+def handle_back_to_semesters(chat_id, message_id, user_id):
+    """Show semester list again"""
+    keyboard = [[{"text": sem, "callback_data": sem}] for sem in semesters.keys()]
+    keyboard.append([{"text": "📩 Feedback", "url": "https://codecrafter02.github.io/Feedback02/"}])
+    reply_markup = {"inline_keyboard": keyboard}
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("approve", approve))
-    application.add_handler(CommandHandler("pending", pending))
-    application.add_handler(CallbackQueryHandler(button))
+    info = user_data.get(user_id, {})
+    nav_message_id = info.get("nav_message_id", message_id)
     
-    await application.initialize()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    await application.start()
+    result = edit_message(chat_id, nav_message_id, "📚 Select Semester:", reply_markup)
+    
+    if not result or not result.get('ok'):
+        new_result = send_message(chat_id, "📚 Select Semester:", reply_markup)
+        if new_result and new_result.get('ok') and user_id in user_data:
+            user_data[user_id]["nav_message_id"] = new_result['result']['message_id']
 
-# ----------------- FLASK ROUTES -----------------
+# -------------------------
+# Flask routes
+# -------------------------
 @app.route("/")
-def index():
-    return "Bot is running with payment system!"
+def home():
+    if not TOKEN:
+        return "❌ BOT_TOKEN environment variable not set!"
+    return "✅ Bot is Live on Render!"
 
-@app.route("/webhook", methods=["POST"])
+@app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run(application.process_update(update))
-        return "ok"
-    except Exception as e:
-        print(f"Error processing update: {e}")
-        return "error", 500
+        if not TOKEN:
+            return "Bot not initialized - check BOT_TOKEN", 500
 
-# ----------------- MAIN -----------------
+        data = request.get_json()
+        if not data:
+            return "Bad Request", 400
+
+        if "message" in data:
+            message = data["message"]
+            chat_id = message["chat"]["id"]
+
+            if "text" in message and str(message["text"]).startswith("/start"):
+                handle_start(chat_id)
+
+        elif "callback_query" in data:
+            callback_query = data["callback_query"]
+            callback_query_id = callback_query["id"]
+            chat_id = callback_query["message"]["chat"]["id"]
+            message_id = callback_query["message"]["message_id"]
+            user_id = callback_query["from"]["id"]
+            callback_data = callback_query["data"]
+
+            answer_callback_query(callback_query_id)
+
+            if callback_data in semesters:
+                handle_semester_selection(chat_id, message_id, user_id, callback_data)
+
+            elif callback_data == "BACK_SUBJECTS":
+                handle_back_to_subjects(chat_id, message_id, user_id)
+
+            elif callback_data == "BACK_SEMESTERS":
+                handle_back_to_semesters(chat_id, message_id, user_id)
+
+            else:
+                all_subjects = []
+                for sem_subjects in semesters.values():
+                    all_subjects.extend(sem_subjects)
+                
+                if callback_data in all_subjects:
+                    handle_subject_selection(chat_id, message_id, user_id, callback_data)
+                else:
+                    send_message(chat_id, "❗Unknown command. Please use /start to begin.")
+
+        return "ok", 200
+
+    except Exception as e:
+        print(f"Error processing webhook: {e}")
+        return "Internal Server Error", 500
+
+@app.route(PAYMENT_WEBHOOK_PATH, methods=["POST"])
+def payment_webhook():
+    """Handle Razorpay payment webhook"""
+    try:
+        payload = request.get_data()
+        signature = request.headers.get('X-Razorpay-Signature')
+        
+        if not signature or not RAZORPAY_KEY_SECRET:
+            return "Unauthorized", 401
+        
+        if not verify_razorpay_signature(payload, signature, RAZORPAY_KEY_SECRET):
+            return "Invalid signature", 401
+        
+        data = request.get_json()
+        event = data.get('event')
+        
+        if event == 'payment.captured':
+            payment = data.get('payload', {}).get('payment', {}).get('entity', {})
+            order_id = payment.get('order_id')
+            
+            if order_id in pending_payments:
+                payment_info = pending_payments[order_id]
+                user_id = payment_info['user_id']
+                chat_id = payment_info['chat_id']
+                semester = payment_info['semester']
+                
+                # Mark semester as paid
+                mark_semester_paid(user_id, semester)
+                
+                # Send success message with WARNING (English only)
+                warning_message = (
+                    f"✅ *Payment Successful!*\n\n"
+                    f"🎉 *{semester} Unlocked!*\n\n"
+                    f"⚠️ *IMPORTANT WARNING:*\n\n"
+                    f"🔴 Please *download all subject PDFs NOW!*\n\n"
+                    f"❗ If you leave this page or the bot restarts, you will need to pay again.\n\n"
+                    f"💾 Download all your files immediately by selecting subjects below 👇"
+                )
+                
+                send_message(chat_id, warning_message)
+                
+                # Show subjects
+                if user_id in user_data:
+                    nav_message_id = user_data[user_id].get("nav_message_id")
+                    if nav_message_id:
+                        show_subjects(chat_id, nav_message_id, user_id, semester)
+                
+                # Remove from pending
+                del pending_payments[order_id]
+        
+        return "ok", 200
+        
+    except Exception as e:
+        print(f"Error processing payment webhook: {e}")
+        return "Internal Server Error", 500
+
+# -------------------------
+# Entrypoint
+# -------------------------
 if __name__ == "__main__":
-    # Setup bot
-    asyncio.run(setup_application())
-    
-    # Run Flask
+    if TOKEN:
+        try:
+            webhook_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
+            response = requests.post(webhook_url, json={"url": WEBHOOK_URL}, timeout=10)
+            print(f"Webhook setup: {response.json()}")
+        except Exception as e:
+            print(f"Error setting webhook: {e}")
+
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)
