@@ -359,12 +359,13 @@ def handle_subject_selection(chat_id, message_id, user_id, subject):
         except:
             pass
 
-def handle_check_payment(chat_id, message_id, user_id, semester):
+def handle_check_payment(chat_id, message_id, user_id, semester, callback_query_id):
     """Check if payment has been completed"""
     if is_semester_paid(user_id, semester):
+        answer_callback_query(callback_query_id, "✅ Payment verified!")
         show_subjects(chat_id, message_id, user_id, semester)
     else:
-        answer_callback_query(message_id, "❌ Payment not yet confirmed. Please complete payment first.")
+        answer_callback_query(callback_query_id, "❌ Payment not yet confirmed. Please wait a moment or complete payment first.")
 
 def handle_back_to_subjects(chat_id, message_id, user_id):
     """Show subject list again for the saved semester"""
@@ -412,34 +413,42 @@ def payment_success():
     semester = request.args.get('semester')
     chat_id = request.args.get('chat_id')
     
-    if user_id and semester:
-        user_id = int(user_id)
-        chat_id = int(chat_id)
-        
-        # Mark as paid
-        mark_semester_paid(user_id, semester)
-        
-        # Send success message
-        success_text = (
-            f"✅ *Payment Successful!*\n\n"
-            f"🎉 *{semester} Unlocked!*\n\n"
-            f"📱 Return to the bot to access your study materials.\n\n"
-            f"Type /start to begin."
-        )
-        send_message(chat_id, success_text)
+    print(f"Payment success callback received: user_id={user_id}, semester={semester}, chat_id={chat_id}")
+    
+    if user_id and semester and chat_id:
+        try:
+            user_id = int(user_id)
+            chat_id = int(chat_id)
+            
+            # Mark as paid
+            mark_semester_paid(user_id, semester)
+            print(f"Marked semester {semester} as paid for user {user_id}")
+            
+            # Send success message
+            success_text = (
+                f"✅ *Payment Successful!*\n\n"
+                f"🎉 *{semester} Unlocked!*\n\n"
+                f"📱 Return to the bot and click 'I've Completed Payment' button to access your materials."
+            )
+            send_message(chat_id, success_text)
+            
+        except Exception as e:
+            print(f"Error processing payment success: {e}")
     
     return """
     <html>
         <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
                 body {
                     font-family: Arial, sans-serif;
                     display: flex;
                     justify-content: center;
                     align-items: center;
-                    height: 100vh;
+                    min-height: 100vh;
                     margin: 0;
                     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    padding: 20px;
                 }
                 .container {
                     text-align: center;
@@ -447,26 +456,38 @@ def payment_success():
                     padding: 40px;
                     border-radius: 15px;
                     box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                    max-width: 500px;
                 }
-                h1 { color: #28a745; margin-bottom: 20px; }
-                p { color: #666; font-size: 18px; }
+                h1 { color: #28a745; margin-bottom: 20px; font-size: 2em; }
+                p { color: #666; font-size: 18px; margin: 15px 0; }
                 .btn {
                     display: inline-block;
                     margin-top: 20px;
-                    padding: 12px 30px;
+                    padding: 15px 40px;
                     background: #667eea;
                     color: white;
                     text-decoration: none;
-                    border-radius: 5px;
+                    border-radius: 8px;
                     font-weight: bold;
+                    font-size: 18px;
+                    transition: background 0.3s;
+                }
+                .btn:hover {
+                    background: #5568d3;
+                }
+                .checkmark {
+                    font-size: 60px;
+                    color: #28a745;
+                    margin-bottom: 20px;
                 }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>✅ Payment Successful!</h1>
-                <p>Your semester has been unlocked!</p>
-                <p>Return to the Telegram bot to access your materials.</p>
+                <div class="checkmark">✅</div>
+                <h1>Payment Successful!</h1>
+                <p><strong>Your semester has been unlocked!</strong></p>
+                <p>Return to the Telegram bot and click the <strong>"✅ I've Completed Payment"</strong> button to access your study materials.</p>
                 <a href="https://t.me/BPharmaExamBot" class="btn">Open Bot</a>
             </div>
         </body>
@@ -505,7 +526,7 @@ def webhook():
 
             elif callback_data.startswith("CHECK_PAYMENT_"):
                 semester = callback_data.replace("CHECK_PAYMENT_", "")
-                handle_check_payment(chat_id, message_id, user_id, semester)
+                handle_check_payment(chat_id, message_id, user_id, semester, callback_query_id)
 
             elif callback_data == "BACK_SUBJECTS":
                 handle_back_to_subjects(chat_id, message_id, user_id)
@@ -536,14 +557,19 @@ def payment_webhook():
         payload = request.get_data()
         signature = request.headers.get('X-Razorpay-Signature')
         
+        print(f"Webhook received: {request.get_json()}")
+        
         if not signature or not RAZORPAY_KEY_SECRET:
+            print("Webhook: Missing signature or secret")
             return "Unauthorized", 401
         
         if not verify_razorpay_signature(payload, signature, RAZORPAY_KEY_SECRET):
+            print("Webhook: Invalid signature")
             return "Invalid signature", 401
         
         data = request.get_json()
         event = data.get('event')
+        print(f"Webhook event: {event}")
         
         if event == 'payment_link.paid':
             payment_link = data.get('payload', {}).get('payment_link', {}).get('entity', {})
@@ -553,7 +579,9 @@ def payment_webhook():
             chat_id = notes.get('chat_id')
             semester = notes.get('semester')
             
-            if user_id and semester:
+            print(f"Payment link paid: user_id={user_id}, chat_id={chat_id}, semester={semester}")
+            
+            if user_id and semester and chat_id:
                 user_id = int(user_id)
                 chat_id = int(chat_id)
                 
@@ -561,11 +589,21 @@ def payment_webhook():
                 mark_semester_paid(user_id, semester)
                 
                 print(f"Payment confirmed for user {user_id}, semester {semester}")
+                
+                # Send notification
+                success_text = (
+                    f"✅ *Payment Confirmed!*\n\n"
+                    f"🎉 *{semester} Unlocked!*\n\n"
+                    f"Click 'I've Completed Payment' button to access materials."
+                )
+                send_message(chat_id, success_text)
         
         return "ok", 200
         
     except Exception as e:
         print(f"Error processing payment webhook: {e}")
+        import traceback
+        traceback.print_exc()
         return "Internal Server Error", 500
 
 # -------------------------
