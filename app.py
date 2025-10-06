@@ -4,9 +4,11 @@ import json
 import hmac
 import hashlib
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from flask import Flask, request
 from contextlib import contextmanager
+import traceback
 
 TOKEN = os.getenv("BOT_TOKEN")
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
@@ -22,12 +24,21 @@ PAPER_FOLDER = "bpharm_bot_18"
 app = Flask(__name__)
 
 # -------------------------
-# Database Setup
+# Database Setup with Connection Pool
 # -------------------------
+db_pool = None
+
 def init_db():
-    """Initialize PostgreSQL database"""
+    """Initialize PostgreSQL database with connection pooling"""
+    global db_pool
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        db_pool = psycopg2.pool.SimpleConnectionPool(
+            1,  # minimum connections
+            20,  # maximum connections
+            DATABASE_URL
+        )
+        
+        conn = db_pool.getconn()
         cursor = conn.cursor()
         
         # Create tables
@@ -50,19 +61,25 @@ def init_db():
         
         conn.commit()
         cursor.close()
-        conn.close()
-        print("✅ PostgreSQL database initialized")
+        db_pool.putconn(conn)
+        print("✅ PostgreSQL database initialized with connection pool")
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
+        traceback.print_exc()
 
 @contextmanager
 def get_db():
-    """Context manager for database connections"""
-    conn = psycopg2.connect(DATABASE_URL)
+    """Context manager for database connections from pool"""
+    conn = None
     try:
+        conn = db_pool.getconn()
         yield conn
+    except Exception as e:
+        print(f"❌ Database connection error: {e}")
+        raise
     finally:
-        conn.close()
+        if conn:
+            db_pool.putconn(conn)
 
 def is_semester_paid(user_id, semester):
     """Check if user has paid for a semester"""
@@ -78,6 +95,7 @@ def is_semester_paid(user_id, semester):
             return result is not None
     except Exception as e:
         print(f"❌ Error checking payment: {e}")
+        traceback.print_exc()
         return False
 
 def mark_semester_paid(user_id, semester):
@@ -94,6 +112,7 @@ def mark_semester_paid(user_id, semester):
         print(f"✅ Marked {semester} as paid for user {user_id}")
     except Exception as e:
         print(f"❌ Error marking payment: {e}")
+        traceback.print_exc()
 
 def save_user_session(user_id, semester, nav_message_id=None):
     """Save user session data"""
@@ -111,6 +130,7 @@ def save_user_session(user_id, semester, nav_message_id=None):
             cursor.close()
     except Exception as e:
         print(f"❌ Error saving session: {e}")
+        traceback.print_exc()
 
 def get_user_session(user_id):
     """Get user session data"""
@@ -128,6 +148,7 @@ def get_user_session(user_id):
             return {}
     except Exception as e:
         print(f"❌ Error getting session: {e}")
+        traceback.print_exc()
         return {}
 
 # -------------------------
@@ -205,7 +226,8 @@ def send_message(chat_id, text, reply_markup=None):
         response = requests.post(url, json=data, timeout=10)
         return response.json()
     except Exception as e:
-        print(f"Error sending message: {e}")
+        print(f"❌ Error sending message: {e}")
+        traceback.print_exc()
         return None
 
 def edit_message(chat_id, message_id, text, reply_markup=None):
@@ -225,12 +247,13 @@ def edit_message(chat_id, message_id, text, reply_markup=None):
             if error_code == 400 and "message is not modified" in error_description:
                 return {"ok": True}
             
-            print(f"Edit message failed: {response_data}")
+            print(f"⚠️ Edit message failed: {response_data}")
             return None
         
         return response_data
     except Exception as e:
-        print(f"Error editing message: {e}")
+        print(f"❌ Error editing message: {e}")
+        traceback.print_exc()
         return None
 
 def send_document(chat_id, file_path, caption=None):
@@ -245,7 +268,8 @@ def send_document(chat_id, file_path, caption=None):
             response = requests.post(url, data=data, files=files, timeout=60)
         return response.json()
     except Exception as e:
-        print(f"Error sending document: {e}")
+        print(f"❌ Error sending document: {e}")
+        traceback.print_exc()
         return None
 
 def answer_callback_query(callback_query_id, text=None):
@@ -259,7 +283,8 @@ def answer_callback_query(callback_query_id, text=None):
         response = requests.post(url, json=data, timeout=5)
         return response.json()
     except Exception as e:
-        print(f"Error answering callback: {e}")
+        print(f"❌ Error answering callback: {e}")
+        traceback.print_exc()
         return None
 
 def create_razorpay_payment_link(amount, semester, user_id, chat_id):
@@ -286,7 +311,8 @@ def create_razorpay_payment_link(amount, semester, user_id, chat_id):
         response = requests.post(url, json=payload, auth=auth, timeout=10)
         return response.json()
     except Exception as e:
-        print(f"Error creating payment link: {e}")
+        print(f"❌ Error creating payment link: {e}")
+        traceback.print_exc()
         return None
 
 def verify_razorpay_signature(payload, signature, secret):
@@ -475,8 +501,8 @@ def handle_back_to_semesters(chat_id, message_id, user_id):
 @app.route("/")
 def home():
     if not TOKEN:
-        return "❌ BOT_TOKEN environment variable not set!"
-    return "✅ Bot is Live on Render!"
+        return "❌ BOT_TOKEN environment variable not set!", 500
+    return "✅ Bot is Live on Render!", 200
 
 @app.route(PAYMENT_SUCCESS_PATH, methods=["GET"])
 def payment_success():
@@ -503,6 +529,7 @@ def payment_success():
             
         except Exception as e:
             print(f"❌ Error: {e}")
+            traceback.print_exc()
     
     return """
     <html>
@@ -558,18 +585,25 @@ def payment_success():
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     try:
+        print("📨 Webhook received")
+        
         if not TOKEN:
-            return "Bot not initialized", 500
+            print("❌ Bot not initialized - TOKEN missing")
+            return "ok", 200
 
         data = request.get_json()
         if not data:
-            return "Bad Request", 400
+            print("❌ No data received")
+            return "ok", 200
+
+        print(f"📦 Received data: {json.dumps(data, indent=2)}")
 
         if "message" in data:
             message = data["message"]
             chat_id = message["chat"]["id"]
 
             if "text" in message and str(message["text"]).startswith("/start"):
+                print(f"🚀 Start command from chat_id: {chat_id}")
                 handle_start(chat_id)
 
         elif "callback_query" in data:
@@ -579,6 +613,8 @@ def webhook():
             message_id = callback_query["message"]["message_id"]
             user_id = callback_query["from"]["id"]
             callback_data = callback_query["data"]
+
+            print(f"🔔 Callback: {callback_data} from user: {user_id}")
 
             answer_callback_query(callback_query_id)
 
@@ -603,11 +639,13 @@ def webhook():
                 if callback_data in all_subjects:
                     handle_subject_selection(chat_id, message_id, user_id, callback_data)
 
+        print("✅ Webhook processed successfully")
         return "ok", 200
 
     except Exception as e:
         print(f"❌ Webhook error: {e}")
-        return "Internal Server Error", 500
+        traceback.print_exc()
+        return "ok", 200
 
 @app.route(PAYMENT_WEBHOOK_PATH, methods=["POST"])
 def payment_webhook():
@@ -616,15 +654,15 @@ def payment_webhook():
         payload = request.get_data()
         signature = request.headers.get('X-Razorpay-Signature')
         
-        print(f"🔔 Webhook received")
+        print(f"🔔 Payment webhook received")
         
         if not signature or not RAZORPAY_KEY_SECRET:
-            print("❌ Missing signature")
-            return "Unauthorized", 401
+            print("❌ Missing signature or secret")
+            return "ok", 200
         
         if not verify_razorpay_signature(payload, signature, RAZORPAY_KEY_SECRET):
             print("❌ Invalid signature")
-            return "Invalid signature", 401
+            return "ok", 200
         
         data = request.get_json()
         event = data.get('event')
@@ -654,10 +692,9 @@ def payment_webhook():
         return "ok", 200
         
     except Exception as e:
-        print(f"❌ Webhook error: {e}")
-        import traceback
+        print(f"❌ Payment webhook error: {e}")
         traceback.print_exc()
-        return "Internal Server Error", 500
+        return "ok", 200
 
 # -------------------------
 # Entrypoint
@@ -671,11 +708,35 @@ if __name__ == "__main__":
     
     if TOKEN:
         try:
+            # Delete old webhook first
+            delete_url = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
+            requests.post(delete_url, timeout=10)
+            print("🗑️ Old webhook deleted")
+            
+            # Set new webhook
             webhook_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-            response = requests.post(webhook_url, json={"url": WEBHOOK_URL}, timeout=10)
-            print(f"Webhook setup: {response.json()}")
+            full_webhook_url = f"https://zero2project-wutc.onrender.com{WEBHOOK_PATH}"
+            response = requests.post(
+                webhook_url, 
+                json={
+                    "url": full_webhook_url,
+                    "allowed_updates": ["message", "callback_query"]
+                }, 
+                timeout=10
+            )
+            print(f"🔗 Webhook setup: {response.json()}")
+            
+            # Verify webhook
+            info_url = f"https://api.telegram.org/bot{TOKEN}/getWebhookInfo"
+            info_response = requests.get(info_url, timeout=10)
+            print(f"ℹ️ Webhook info: {info_response.json()}")
+            
         except Exception as e:
-            print(f"Error setting webhook: {e}")
+            print(f"❌ Error setting webhook: {e}")
+            traceback.print_exc()
 
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 Starting server on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
