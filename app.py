@@ -13,12 +13,16 @@ import traceback
 TOKEN = os.getenv("BOT_TOKEN")
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
-DATABASE_URL = os.getenv("DATABASE_URL")  # PostgreSQL connection string
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# ✅ CORRECT RENDER URL SET
+RENDER_URL = "https://bpharmabot-rp6m.onrender.com"
+
 WEBHOOK_PATH = "/webhook"
 PAYMENT_WEBHOOK_PATH = "/payment_webhook"
 PAYMENT_SUCCESS_PATH = "/payment_success"
-WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
-PAYMENT_WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + PAYMENT_WEBHOOK_PATH
+WEBHOOK_URL = RENDER_URL + WEBHOOK_PATH
+PAYMENT_WEBHOOK_URL = RENDER_URL + PAYMENT_WEBHOOK_PATH
 PAPER_FOLDER = "bpharm_bot_18"
 
 app = Flask(__name__)
@@ -33,15 +37,14 @@ def init_db():
     global db_pool
     try:
         db_pool = psycopg2.pool.SimpleConnectionPool(
-            1,  # minimum connections
-            20,  # maximum connections
+            1,
+            20,
             DATABASE_URL
         )
         
         conn = db_pool.getconn()
         cursor = conn.cursor()
         
-        # Create tables
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_payments (
                 user_id BIGINT,
@@ -110,9 +113,11 @@ def mark_semester_paid(user_id, semester):
             conn.commit()
             cursor.close()
         print(f"✅ Marked {semester} as paid for user {user_id}")
+        return True
     except Exception as e:
         print(f"❌ Error marking payment: {e}")
         traceback.print_exc()
+        return False
 
 def save_user_session(user_id, semester, nav_message_id=None):
     """Save user session data"""
@@ -292,7 +297,7 @@ def create_razorpay_payment_link(amount, semester, user_id, chat_id):
     url = "https://api.razorpay.com/v1/payment_links"
     auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
     
-    callback_url = f"https://zero2project-wutc.onrender.com{PAYMENT_SUCCESS_PATH}?user_id={user_id}&semester={semester}&chat_id={chat_id}"
+    callback_url = f"{RENDER_URL}{PAYMENT_SUCCESS_PATH}?user_id={user_id}&semester={semester}&chat_id={chat_id}"
     
     payload = {
         "amount": amount * 100,
@@ -458,6 +463,8 @@ def handle_subject_selection(chat_id, message_id, user_id, subject):
 
 def handle_check_payment(chat_id, message_id, user_id, semester, callback_query_id):
     """Check if payment has been completed"""
+    print(f"🔍 Checking payment for user {user_id}, semester {semester}")
+    
     if is_semester_paid(user_id, semester):
         answer_callback_query(callback_query_id, "✅ Payment verified!")
         show_subjects(chat_id, message_id, user_id, semester)
@@ -511,63 +518,136 @@ def payment_success():
     semester = request.args.get('semester')
     chat_id = request.args.get('chat_id')
     
-    print(f"💰 Payment success: user={user_id}, semester={semester}")
+    print(f"💰 Payment success callback: user={user_id}, semester={semester}, chat={chat_id}")
     
     if user_id and semester and chat_id:
         try:
             user_id = int(user_id)
             chat_id = int(chat_id)
             
-            mark_semester_paid(user_id, semester)
+            # Mark as paid
+            success = mark_semester_paid(user_id, semester)
             
-            success_text = (
-                f"✅ *Payment Successful!*\n\n"
-                f"🎉 *{semester} Unlocked!*\n\n"
-                f"📱 Return to bot and click 'I've Completed Payment' to access materials."
-            )
-            send_message(chat_id, success_text)
+            if success:
+                print(f"✅ Successfully marked semester {semester} as paid for user {user_id}")
+                
+                # Send confirmation to user
+                success_text = (
+                    f"✅ *Payment Successful!*\n\n"
+                    f"🎉 *{semester} Unlocked!*\n\n"
+                    f"📱 Click 'I've Completed Payment' button to access your materials."
+                )
+                send_message(chat_id, success_text)
+            else:
+                print(f"❌ Failed to mark payment for user {user_id}")
             
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"❌ Error processing payment: {e}")
             traceback.print_exc()
+    else:
+        print(f"⚠️ Missing parameters: user_id={user_id}, semester={semester}, chat_id={chat_id}")
     
+    # Return success page
     return """
+    <!DOCTYPE html>
     <html>
         <head>
+            <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Payment Successful</title>
             <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
                 body {
-                    font-family: Arial, sans-serif;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
                     display: flex;
                     justify-content: center;
                     align-items: center;
                     min-height: 100vh;
-                    margin: 0;
                     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     padding: 20px;
                 }
                 .container {
                     text-align: center;
                     background: white;
-                    padding: 40px;
-                    border-radius: 15px;
-                    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                    padding: 50px 40px;
+                    border-radius: 20px;
+                    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
                     max-width: 500px;
+                    animation: slideIn 0.5s ease-out;
                 }
-                h1 { color: #28a745; margin-bottom: 20px; font-size: 2em; }
-                p { color: #666; font-size: 18px; margin: 15px 0; }
+                @keyframes slideIn {
+                    from {
+                        opacity: 0;
+                        transform: translateY(-30px);
+                    }
+                    to {
+                        opacity: 1;
+                        transform: translateY(0);
+                    }
+                }
+                .checkmark {
+                    font-size: 80px;
+                    margin-bottom: 20px;
+                    animation: bounce 0.6s ease-out;
+                }
+                @keyframes bounce {
+                    0%, 100% { transform: scale(1); }
+                    50% { transform: scale(1.2); }
+                }
+                h1 {
+                    color: #28a745;
+                    margin-bottom: 20px;
+                    font-size: 32px;
+                    font-weight: 700;
+                }
+                p {
+                    color: #555;
+                    font-size: 18px;
+                    margin: 15px 0;
+                    line-height: 1.6;
+                }
+                .highlight {
+                    background: #fff3cd;
+                    padding: 15px;
+                    border-radius: 10px;
+                    margin: 20px 0;
+                    border-left: 4px solid #ffc107;
+                }
                 .btn {
                     display: inline-block;
-                    margin-top: 20px;
-                    padding: 15px 40px;
-                    background: #667eea;
+                    margin-top: 30px;
+                    padding: 15px 50px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     color: white;
                     text-decoration: none;
-                    border-radius: 8px;
+                    border-radius: 50px;
                     font-weight: bold;
                     font-size: 18px;
+                    transition: all 0.3s ease;
+                    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
                 }
-                .checkmark { font-size: 60px; color: #28a745; margin-bottom: 20px; }
+                .btn:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+                }
+                .steps {
+                    text-align: left;
+                    margin: 25px 0;
+                    padding: 20px;
+                    background: #f8f9fa;
+                    border-radius: 10px;
+                }
+                .steps ol {
+                    margin-left: 20px;
+                }
+                .steps li {
+                    margin: 10px 0;
+                    color: #333;
+                }
             </style>
         </head>
         <body>
@@ -575,8 +655,21 @@ def payment_success():
                 <div class="checkmark">✅</div>
                 <h1>Payment Successful!</h1>
                 <p><strong>Your semester has been unlocked!</strong></p>
-                <p>Return to Telegram and click <strong>"✅ I've Completed Payment"</strong> button.</p>
-                <a href="https://t.me/BPharmaExamBot" class="btn">Open Bot</a>
+                
+                <div class="steps">
+                    <p style="margin-bottom: 10px; font-weight: bold;">📱 Next Steps:</p>
+                    <ol>
+                        <li>Go back to Telegram</li>
+                        <li>Click the <strong>"✅ I've Completed Payment"</strong> button</li>
+                        <li>Access your study materials</li>
+                    </ol>
+                </div>
+                
+                <div class="highlight">
+                    <p style="margin: 0;"><strong>💡 Tip:</strong> You now have lifetime access to all subjects!</p>
+                </div>
+                
+                <a href="https://t.me/PharmaCrackBot" class="btn">Open Bot →</a>
             </div>
         </body>
     </html>
@@ -714,12 +807,11 @@ if __name__ == "__main__":
             print("🗑️ Old webhook deleted")
             
             # Set new webhook
-            webhook_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-            full_webhook_url = f"https://zero2project-wutc.onrender.com{WEBHOOK_PATH}"
+            webhook_api_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
             response = requests.post(
-                webhook_url, 
+                webhook_api_url, 
                 json={
-                    "url": full_webhook_url,
+                    "url": WEBHOOK_URL,
                     "allowed_updates": ["message", "callback_query"]
                 }, 
                 timeout=10
@@ -738,5 +830,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"🚀 Starting server on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
-
-
