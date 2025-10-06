@@ -6,7 +6,7 @@ import hashlib
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
-from flask import Flask, request
+from flask import Flask, request, redirect, render_template_string
 from contextlib import contextmanager
 import traceback
 
@@ -15,8 +15,8 @@ RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# ✅ CORRECT RENDER URL SET
-RENDER_URL = "https://bpharmabot-rp6m.onrender.com"
+# GET YOUR ACTUAL RENDER URL FROM DASHBOARD
+RENDER_URL = "https://bpharmabot-rp6m.onrender.com"  # ⚠️ APNA URL YAHAN DALO
 
 WEBHOOK_PATH = "/webhook"
 PAYMENT_WEBHOOK_PATH = "/payment_webhook"
