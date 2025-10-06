@@ -3,75 +3,19 @@ import requests
 import json
 import hmac
 import hashlib
-from flask import Flask, request
+from flask import Flask, request, redirect
 
 TOKEN = os.getenv("BOT_TOKEN")
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 WEBHOOK_PATH = "/webhook"
 PAYMENT_WEBHOOK_PATH = "/payment_webhook"
+PAYMENT_SUCCESS_PATH = "/payment_success"
 WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + WEBHOOK_PATH
 PAYMENT_WEBHOOK_URL = "https://zero2project-wutc.onrender.com" + PAYMENT_WEBHOOK_PATH
 PAPER_FOLDER = "bpharm_bot_18"
 
 app = Flask(__name__)
-
-# Semester-subject mapping
-semesters = {
-    "1st Semester": [
-        "Human Anatomy and Physiology I",
-        "Pharmaceutical Analysis I",
-        "Pharmaceutics I",
-        "Pharmaceutical Inorganic Chemistry",
-    ],
-    "2nd Semester": [
-        "Human Anatomy and Physiology II",
-        "Pharmaceutical Organic Chemistry I",
-        "Biochemistry",
-        "Pathophysiology",
-    ],
-    "3rd Semester": [
-        "Pharmaceutical Organic Chemistry II",
-        "Physical Pharmaceutics I",
-        "Pharmaceutical Microbiology",
-        "Pharmaceutical Engineering",
-        "Universal Human Values",
-    ],
-    "4th Semester": [
-        "Pharmaceutical Organic Chemistry III",
-        "Medicinal Chemistry I",
-        "Physical Pharmaceutics II",
-        "Pharmacology I",
-        "Pharmacognosy I",
-    ],
-    "5th Semester": [
-        "Medicinal Chemistry II",
-        "Industrial Pharmacy I",
-        "Pharmacology II",
-        "Pharmacognosy and Phytochemistry",
-        "Pharmaceutical Jurisprudence Theory",
-    ],
-    "6th Semester": [
-        "Medicinal Chemistry III",
-        "Pharmacology III",
-        "Herbal Drug Technology Theory",
-        "Biopharmaceutics and Pharmacokinetics Theory",
-        "Pharmaceutical Biotechnology",
-        "Quality Assurance Theory",
-    ],
-    "7th Semester": [
-        "Instrumental Methods of Analysis",
-        "Industrial Pharmacy II",
-        "Pharmacy Practice",
-        "Novel Drug Delivery System",
-    ],
-    "8th Semester": [
-        "Biostatistics and Research Methodology",
-        "Social and Preventive Pharmacy",
-        "Pharma Marketing Management",
-        "Cosmetic Science",
-    ],
-}
 
 # Store user data in memory (user_id -> {"semester": ..., "paid_semesters": [...], ...})
 user_data = {}
@@ -152,17 +96,23 @@ def answer_callback_query(callback_query_id, text=None):
         print(f"Error answering callback: {e}")
         return None
 
-def create_razorpay_order(amount, semester, user_id):
-    """Create Razorpay order"""
-    url = "https://api.razorpay.com/v1/orders"
+def create_razorpay_payment_link(amount, semester, user_id, chat_id):
+    """Create Razorpay payment link with callback URL"""
+    url = "https://api.razorpay.com/v1/payment_links"
     auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+    
+    callback_url = f"https://zero2project-wutc.onrender.com{PAYMENT_SUCCESS_PATH}?user_id={user_id}&semester={semester}&chat_id={chat_id}"
     
     payload = {
         "amount": amount * 100,  # amount in paise
         "currency": "INR",
+        "description": f"{semester} - B.Pharm Study Material",
+        "callback_url": callback_url,
+        "callback_method": "get",
         "notes": {
             "semester": semester,
-            "user_id": str(user_id)
+            "user_id": str(user_id),
+            "chat_id": str(chat_id)
         }
     }
     
@@ -170,7 +120,7 @@ def create_razorpay_order(amount, semester, user_id):
         response = requests.post(url, json=payload, auth=auth, timeout=10)
         return response.json()
     except Exception as e:
-        print(f"Error creating order: {e}")
+        print(f"Error creating payment link: {e}")
         return None
 
 def verify_razorpay_signature(payload, signature, secret):
@@ -196,6 +146,65 @@ def mark_semester_paid(user_id, semester):
         user_data[user_id]["paid_semesters"] = []
     if semester not in user_data[user_id]["paid_semesters"]:
         user_data[user_id]["paid_semesters"].append(semester)
+
+# -------------------------
+# Semester-subject mapping
+# -------------------------
+semesters = {
+    "1st Semester": [
+        "Human Anatomy and Physiology I",
+        "Pharmaceutical Analysis I",
+        "Pharmaceutics I",
+        "Pharmaceutical Inorganic Chemistry",
+    ],
+    "2nd Semester": [
+        "Human Anatomy and Physiology II",
+        "Pharmaceutical Organic Chemistry I",
+        "Biochemistry",
+        "Pathophysiology",
+    ],
+    "3rd Semester": [
+        "Pharmaceutical Organic Chemistry II",
+        "Physical Pharmaceutics I",
+        "Pharmaceutical Microbiology",
+        "Pharmaceutical Engineering",
+        "Universal Human Values",
+    ],
+    "4th Semester": [
+        "Pharmaceutical Organic Chemistry III",
+        "Medicinal Chemistry I",
+        "Physical Pharmaceutics II",
+        "Pharmacology I",
+        "Pharmacognosy I",
+    ],
+    "5th Semester": [
+        "Medicinal Chemistry II",
+        "Industrial Pharmacy I",
+        "Pharmacology II",
+        "Pharmacognosy and Phytochemistry",
+        "Pharmaceutical Jurisprudence Theory",
+    ],
+    "6th Semester": [
+        "Medicinal Chemistry III",
+        "Pharmacology III",
+        "Herbal Drug Technology Theory",
+        "Biopharmaceutics and Pharmacokinetics Theory",
+        "Pharmaceutical Biotechnology",
+        "Quality Assurance Theory",
+    ],
+    "7th Semester": [
+        "Instrumental Methods of Analysis",
+        "Industrial Pharmacy II",
+        "Pharmacy Practice",
+        "Novel Drug Delivery System",
+    ],
+    "8th Semester": [
+        "Biostatistics and Research Methodology",
+        "Social and Preventive Pharmacy",
+        "Pharma Marketing Management",
+        "Cosmetic Science",
+    ],
+}
 
 # -------------------------
 # Handlers
@@ -233,27 +242,29 @@ def handle_semester_selection(chat_id, message_id, user_id, semester):
         show_payment_screen(chat_id, message_id, user_id, semester)
 
 def show_payment_screen(chat_id, message_id, user_id, semester):
-    """Show payment screen with Razorpay payment button"""
-    # Create Razorpay order
-    order = create_razorpay_order(10, semester, user_id)
+    """Show payment screen with Razorpay payment link"""
+    # Create Razorpay payment link
+    payment_link_data = create_razorpay_payment_link(10, semester, user_id, chat_id)
     
-    if not order or "id" not in order:
-        send_message(chat_id, "❌ Error creating payment. Please try again.")
+    if not payment_link_data or "short_url" not in payment_link_data:
+        send_message(chat_id, "❌ Error creating payment link. Please try again later.")
         return
     
-    order_id = order["id"]
-    pending_payments[order_id] = {
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "semester": semester,
-        "message_id": message_id
-    }
+    payment_url = payment_link_data["short_url"]
     
-    # Create payment link
-    payment_link = f"https://api.razorpay.com/v1/checkout/embedded?key_id={RAZORPAY_KEY_ID}&order_id={order_id}"
+    # Store payment info
+    payment_id = payment_link_data.get("id")
+    if payment_id:
+        pending_payments[payment_id] = {
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "semester": semester,
+            "message_id": message_id
+        }
     
     keyboard = [
-        [{"text": "💳 Pay ₹10 to Unlock", "url": payment_link}],
+        [{"text": "💳 Pay ₹10 to Unlock", "url": payment_url}],
+        [{"text": "✅ I've Completed Payment", "callback_data": f"CHECK_PAYMENT_{semester}"}],
         [{"text": "🔙 Back to Semesters", "callback_data": "BACK_SEMESTERS"}]
     ]
     reply_markup = {"inline_keyboard": keyboard}
@@ -263,7 +274,7 @@ def show_payment_screen(chat_id, message_id, user_id, semester):
         f"💰 Price: ₹10 (One-time payment)\n"
         f"✅ Lifetime access to all subjects\n"
         f"📚 Previous year papers + Guess papers\n\n"
-        f"Click the button below to pay:"
+        f"👇 Click below to pay, then return and click 'I've Completed Payment'"
     )
     
     result = edit_message(chat_id, message_id, text, reply_markup)
@@ -348,6 +359,13 @@ def handle_subject_selection(chat_id, message_id, user_id, subject):
         except:
             pass
 
+def handle_check_payment(chat_id, message_id, user_id, semester):
+    """Check if payment has been completed"""
+    if is_semester_paid(user_id, semester):
+        show_subjects(chat_id, message_id, user_id, semester)
+    else:
+        answer_callback_query(message_id, "❌ Payment not yet confirmed. Please complete payment first.")
+
 def handle_back_to_subjects(chat_id, message_id, user_id):
     """Show subject list again for the saved semester"""
     info = user_data.get(user_id, {})
@@ -387,6 +405,74 @@ def home():
         return "❌ BOT_TOKEN environment variable not set!"
     return "✅ Bot is Live on Render!"
 
+@app.route(PAYMENT_SUCCESS_PATH, methods=["GET"])
+def payment_success():
+    """Handle successful payment redirect"""
+    user_id = request.args.get('user_id')
+    semester = request.args.get('semester')
+    chat_id = request.args.get('chat_id')
+    
+    if user_id and semester:
+        user_id = int(user_id)
+        chat_id = int(chat_id)
+        
+        # Mark as paid
+        mark_semester_paid(user_id, semester)
+        
+        # Send success message
+        success_text = (
+            f"✅ *Payment Successful!*\n\n"
+            f"🎉 *{semester} Unlocked!*\n\n"
+            f"📱 Return to the bot to access your study materials.\n\n"
+            f"Type /start to begin."
+        )
+        send_message(chat_id, success_text)
+    
+    return """
+    <html>
+        <head>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                }
+                .container {
+                    text-align: center;
+                    background: white;
+                    padding: 40px;
+                    border-radius: 15px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                }
+                h1 { color: #28a745; margin-bottom: 20px; }
+                p { color: #666; font-size: 18px; }
+                .btn {
+                    display: inline-block;
+                    margin-top: 20px;
+                    padding: 12px 30px;
+                    background: #667eea;
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-weight: bold;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>✅ Payment Successful!</h1>
+                <p>Your semester has been unlocked!</p>
+                <p>Return to the Telegram bot to access your materials.</p>
+                <a href="https://t.me/BPharmaExamBot" class="btn">Open Bot</a>
+            </div>
+        </body>
+    </html>
+    """
+
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     try:
@@ -416,6 +502,10 @@ def webhook():
 
             if callback_data in semesters:
                 handle_semester_selection(chat_id, message_id, user_id, callback_data)
+
+            elif callback_data.startswith("CHECK_PAYMENT_"):
+                semester = callback_data.replace("CHECK_PAYMENT_", "")
+                handle_check_payment(chat_id, message_id, user_id, semester)
 
             elif callback_data == "BACK_SUBJECTS":
                 handle_back_to_subjects(chat_id, message_id, user_id)
@@ -455,39 +545,22 @@ def payment_webhook():
         data = request.get_json()
         event = data.get('event')
         
-        if event == 'payment.captured':
-            payment = data.get('payload', {}).get('payment', {}).get('entity', {})
-            order_id = payment.get('order_id')
+        if event == 'payment_link.paid':
+            payment_link = data.get('payload', {}).get('payment_link', {}).get('entity', {})
+            notes = payment_link.get('notes', {})
             
-            if order_id in pending_payments:
-                payment_info = pending_payments[order_id]
-                user_id = payment_info['user_id']
-                chat_id = payment_info['chat_id']
-                semester = payment_info['semester']
+            user_id = notes.get('user_id')
+            chat_id = notes.get('chat_id')
+            semester = notes.get('semester')
+            
+            if user_id and semester:
+                user_id = int(user_id)
+                chat_id = int(chat_id)
                 
                 # Mark semester as paid
                 mark_semester_paid(user_id, semester)
                 
-                # Send success message with WARNING (English only)
-                warning_message = (
-                    f"✅ *Payment Successful!*\n\n"
-                    f"🎉 *{semester} Unlocked!*\n\n"
-                    f"⚠️ *IMPORTANT WARNING:*\n\n"
-                    f"🔴 Please *download all subject PDFs NOW!*\n\n"
-                    f"❗ If you leave this page or the bot restarts, you will need to pay again.\n\n"
-                    f"💾 Download all your files immediately by selecting subjects below 👇"
-                )
-                
-                send_message(chat_id, warning_message)
-                
-                # Show subjects
-                if user_id in user_data:
-                    nav_message_id = user_data[user_id].get("nav_message_id")
-                    if nav_message_id:
-                        show_subjects(chat_id, nav_message_id, user_id, semester)
-                
-                # Remove from pending
-                del pending_payments[order_id]
+                print(f"Payment confirmed for user {user_id}, semester {semester}")
         
         return "ok", 200
         
